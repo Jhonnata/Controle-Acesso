@@ -1,0 +1,6 @@
+{
+  "name": "Controle de Acesso - Expositores",
+  "description": "Aplicativo de controle de acesso de participantes agrupados por expositor com sincronização em tempo real com o Google Sheets.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
