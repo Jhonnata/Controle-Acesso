@@ -1379,7 +1379,7 @@ export async function updateAttendeeInSupabase(
     id: attendee.id,
     name: attendee.name,
     exhibitor: attendee.exhibitor,
-    cpf: attendee.document || '',
+    cpf: attendee.document?.trim() || null,
     date: attendee.date || '21/08',
     is_checked_in: isCheckedIn,
     status: statusStr,
@@ -1450,7 +1450,7 @@ export async function batchUpdateExhibitorInSupabase(
     id: a.id,
     name: a.name,
     exhibitor: a.exhibitor,
-    cpf: a.document || '',
+    cpf: a.document?.trim() || null,
     date: a.date || '21/08',
     is_checked_in: isCheckedIn,
     status: statusStr,
@@ -1553,7 +1553,7 @@ export async function syncAllAttendeesToSupabase(
     id: a.id,
     name: a.name,
     exhibitor: a.exhibitor,
-    cpf: a.document || '',
+    cpf: a.document?.trim() || null,
     date: a.date || '21/08',
     is_checked_in: Boolean(a.isCheckedIn),
     status: a.isCheckedIn ? 'Entrou' : 'Pendente',
@@ -1595,7 +1595,7 @@ export async function seedInitialDatasetToSupabase(): Promise<{
         id: r.id,
         name: r.name,
         exhibitor: r.exhibitor,
-        cpf: r.cpf || '',
+        cpf: r.cpf?.trim() || null,
         date: r.date || '21/08',
         is_checked_in: existing ? existing.is_checked_in : false,
         status: existing ? existing.status : 'Pendente',
@@ -1671,7 +1671,7 @@ export async function saveOrUpdateAttendeeInSupabase(
     id: targetId,
     name: attData.name,
     exhibitor: attData.exhibitor,
-    cpf: attData.document || '',
+    cpf: attData.document?.trim() || null,
     date: dateStr,
     is_checked_in: Boolean(attData.isCheckedIn),
     status: attData.isCheckedIn ? 'Entrou' : 'Pendente',
@@ -1761,6 +1761,12 @@ CREATE TABLE IF NOT EXISTS public.attendees (
   created_at TIMESTAMPTZ DEFAULT NOW(),
   updated_at TIMESTAMPTZ DEFAULT NOW()
 );
+
+-- 1.1 CPF ÚNICO POR DIA (impede credenciado duplicado no mesmo dia)
+ALTER TABLE public.attendees DROP CONSTRAINT IF EXISTS attendees_cpf_date_unique;
+CREATE UNIQUE INDEX IF NOT EXISTS attendees_cpf_date_unique
+  ON public.attendees (cpf, date)
+  WHERE cpf IS NOT NULL AND btrim(cpf) <> '';
 
 -- 2. TABELA DE AUDITORIA DE CHECK-INS / RELATÓRIO HISTÓRICO
 CREATE TABLE IF NOT EXISTS public.checkin_logs (

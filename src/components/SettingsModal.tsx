@@ -13,6 +13,7 @@ import {
   Sliders,
   Sparkles,
   ShieldCheck,
+  Upload,
 } from 'lucide-react';
 import {
   DEFAULT_SUPABASE_URL,
@@ -37,6 +38,7 @@ interface SettingsModalProps {
   onRefresh: () => void;
   isSyncing: boolean;
   isTableMissing?: boolean;
+  onOpenImport: () => void;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -48,6 +50,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   onRefresh,
   isSyncing,
   isTableMissing = false,
+  onOpenImport,
 }) => {
   const activeCfg = getActiveSupabaseConfig();
   const [urlInput, setUrlInput] = useState(activeCfg.url);
@@ -232,6 +235,28 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   <div className="text-base font-black text-emerald-950">{checkedInCount} presentes</div>
                 </div>
               </div>
+
+              {/* Import Spreadsheet */}
+              <button
+                onClick={() => {
+                  onClose();
+                  onOpenImport();
+                }}
+                className="w-full p-3.5 rounded-2xl bg-slate-900 hover:bg-slate-800 text-white flex items-center justify-between gap-2 transition-colors"
+              >
+                <span className="flex items-center gap-2.5 text-left">
+                  <Upload className="w-4 h-4 text-emerald-400 shrink-0" />
+                  <span>
+                    <span className="block text-xs font-black">
+                      Importar Planilha (CSV / Colar)
+                    </span>
+                    <span className="block text-[10px] text-slate-300 font-bold mt-0.5">
+                      Atualiza por CPF — mesmo CPF no mesmo dia não duplica
+                    </span>
+                  </span>
+                </span>
+                <CheckCircle2 className="w-4 h-4 text-emerald-400 shrink-0" />
+              </button>
 
               {/* Planilhas Google Sheets Origem */}
               <div className="p-3.5 rounded-2xl bg-[#F8FAFC] border border-slate-200/70 space-y-2">

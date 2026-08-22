@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import {
   TrendingUp,
   Sparkles,
@@ -28,42 +28,45 @@ export const StatsBar: React.FC<StatsBarProps> = ({
   const [currentTimeStr, setCurrentTimeStr] = useState(() => {
     return new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' });
   });
+  const [currentHour, setCurrentHour] = useState(() => new Date().getHours());
+  const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     const timer = setInterval(() => {
-      setCurrentTimeStr(new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+      const now = new Date();
+      setCurrentTimeStr(now.toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit' }));
+      setCurrentHour(now.getHours());
     }, 1000);
     return () => clearInterval(timer);
   }, []);
 
-  // Compute real hourly distribution from checked-in attendees
-  const hourlyBuckets = [
-    { label: '08h', hour: 8 },
-    { label: '10h', hour: 10 },
-    { label: '12h', hour: 12 },
-    { label: '14h', hour: 14 },
-    { label: '16h', hour: 16 },
-    { label: '18h', hour: 18 },
-    { label: '20h', hour: 20 },
-    { label: '21h+', hour: 21 },
-  ];
+  // Keep the current hour centered in the scrollable chart
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const col = el.querySelector<HTMLElement>(`[data-hour="${currentHour}"]`);
+    if (!col) return;
+    el.scrollTo({
+      left: col.offsetLeft - el.clientWidth / 2 + col.clientWidth / 2,
+      behavior: 'smooth',
+    });
+  }, [currentHour]);
 
-  // Count attendees per hour bucket
-  const hourlyCounts = hourlyBuckets.map((bucket) => {
-    const count = attendees.filter((a) => {
+  // One bucket per hour of the day
+  const hourlyBuckets = Array.from({ length: 24 }, (_, h) => ({
+    label: `${String(h).padStart(2, '0')}h`,
+    hour: h,
+  }));
+
+  // Count attendees per exact hour of check-in
+  const hourlyCounts = hourlyBuckets.map((bucket) => ({
+    ...bucket,
+    count: attendees.filter((a) => {
       if (!a.isCheckedIn || !a.checkedInAt) return false;
-      // parse hour from e.g. "21:13:00" or "21:13" or "2026-08-21T21:13:00"
-      const match = a.checkedInAt.match(/(\d{1,2}):/);
-      if (match) {
-        const h = parseInt(match[1], 10);
-        if (bucket.hour === 21) return h >= 21;
-        return h >= bucket.hour && h < bucket.hour + 2;
-      }
-      return false;
-    }).length;
-
-    return { ...bucket, count };
-  });
+      const match = String(a.checkedInAt).match(/(\d{1,2}):/);
+      return match ? parseInt(match[1], 10) === bucket.hour : false;
+    }).length,
+  }));
 
   const maxHourlyCount = Math.max(1, ...hourlyCounts.map((b) => b.count), checkedIn > 0 ? 1 : 1);
 
@@ -98,43 +101,69 @@ export const StatsBar: React.FC<StatsBarProps> = ({
 
         {/* Dynamic Hourly Distribution Chart */}
         <div className="space-y-2">
-          <div className="flex items-end justify-between gap-1.5 h-16 pt-2 px-1">
-            {hourlyCounts.map((bucket) => {
-              const heightPct = Math.max(
-                12,
-                Math.round((bucket.count / maxHourlyCount) * 85)
-              );
-              const hasCheckins = bucket.count > 0;
+          <div className="flex items-center justify-between px-1">
+            <span className="text-[10px] font-black uppercase tracking-wider text-slate-400">
+              Entradas por hora
+            </span>
+            <span className="text-[9px] font-bold text-slate-400 hidden sm:inline">
+              arraste para ver outros horários →
+            </span>
+          </div>
 
-              return (
-                <div
-                  key={bucket.label}
-                  className="flex-1 flex flex-col items-center gap-1 h-full justify-end"
-                >
+          <div
+            ref={scrollRef}
+            className="overflow-x-auto pb-1 scrollbar-thin"
+            style={{ scrollbarWidth: 'thin' }}
+          >
+            <div className="flex items-end gap-1 h-16 pt-2 px-1 min-w-max w-full">
+              {hourlyCounts.map((bucket) => {
+                const heightPct = Math.max(
+                  10,
+                  Math.round((bucket.count / maxHourlyCount) * 85)
+                );
+                const hasCheckins = bucket.count > 0;
+                const isCurrentHour = bucket.hour === currentHour;
+
+                return (
                   <div
-                    className={`w-full rounded-lg transition-all duration-500 relative flex items-center justify-center ${
-                      hasCheckins
-                        ? 'bg-slate-900 shadow-xs'
-                        : 'bg-slate-100 hover:bg-slate-200'
+                    key={bucket.label}
+                    data-hour={bucket.hour}
+                    className={`w-8 shrink-0 flex flex-col items-center gap-1 h-full justify-end rounded-lg transition-all ${
+                      isCurrentHour ? 'bg-emerald-50 ring-1 ring-emerald-300/70' : ''
                     }`}
-                    style={{ height: `${heightPct}%` }}
                   >
-                    {hasCheckins && (
-                      <span className="absolute -top-4 text-[9px] font-black text-emerald-800 bg-emerald-100 px-1 rounded-sm shadow-2xs">
-                        {bucket.count}
-                      </span>
-                    )}
+                    <div className="relative h-full w-full flex flex-col items-center justify-end">
+                      {hasCheckins && (
+                        <span className="absolute -top-4 text-[9px] font-black text-emerald-800 bg-emerald-100 px-1 rounded-sm shadow-2xs whitespace-nowrap">
+                          {bucket.count}
+                        </span>
+                      )}
+                      <div
+                        className={`w-full rounded-t-md transition-all duration-500 ${
+                          hasCheckins
+                            ? isCurrentHour
+                              ? 'bg-emerald-600 shadow-xs'
+                              : 'bg-slate-900 shadow-xs'
+                            : 'bg-slate-100'
+                        }`}
+                        style={{ height: `${heightPct}%` }}
+                      />
+                    </div>
+                    <span
+                      className={`text-[8px] leading-none pb-0.5 ${
+                        isCurrentHour
+                          ? 'font-black text-emerald-700'
+                          : hasCheckins
+                          ? 'font-black text-slate-900'
+                          : 'font-bold text-slate-400'
+                      }`}
+                    >
+                      {bucket.label}
+                    </span>
                   </div>
-                  <span
-                    className={`text-[9px] ${
-                      hasCheckins ? 'font-black text-slate-900' : 'font-bold text-slate-400'
-                    }`}
-                  >
-                    {bucket.label}
-                  </span>
-                </div>
-              );
-            })}
+                );
+              })}
+            </div>
           </div>
 
           {/* Progress bar */}

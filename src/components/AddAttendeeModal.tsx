@@ -25,6 +25,15 @@ export interface SaveAttendeeData {
   isCheckedIn: boolean;
 }
 
+export const maskCpf = (value: string): string => {
+  const digits = value.replace(/\D/g, '').slice(0, 11);
+  if (digits.length <= 3) return digits;
+  if (digits.length <= 6) return `${digits.slice(0, 3)}.${digits.slice(3)}`;
+  if (digits.length <= 9)
+    return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6)}`;
+  return `${digits.slice(0, 3)}.${digits.slice(3, 6)}.${digits.slice(6, 9)}-${digits.slice(9)}`;
+};
+
 interface AddAttendeeModalProps {
   isOpen: boolean;
   onClose: () => void;
@@ -291,7 +300,9 @@ export const AddAttendeeModal: React.FC<AddAttendeeModalProps> = ({
               <input
                 type="text"
                 value={document}
-                onChange={(e) => setDocument(e.target.value)}
+                onChange={(e) => setDocument(maskCpf(e.target.value))}
+                inputMode="numeric"
+                maxLength={14}
                 placeholder="000.000.000-00"
                 className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs text-slate-900 font-mono font-bold focus:outline-none focus:border-slate-400 focus:bg-white transition-all"
               />

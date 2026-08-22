@@ -6,6 +6,7 @@ import {
   saveOrUpdateAttendeeInSupabase,
   addAttendeeToSupabase,
   seedInitialDatasetToSupabase,
+  syncAllAttendeesToSupabase,
   supabase,
   PROFILES,
 } from './services/supabase';
@@ -24,6 +25,7 @@ import { AttendeeRow } from './components/AttendeeRow';
 import { ScannerModal } from './components/ScannerModal';
 import { AddAttendeeModal, SaveAttendeeData } from './components/AddAttendeeModal';
 import { SettingsModal } from './components/SettingsModal';
+import { ImportModal } from './components/ImportModal';
 import { ExportModal } from './components/ExportModal';
 import { ProfileSelectorModal } from './components/ProfileSelectorModal';
 import { BottomNavBar } from './components/BottomNavBar';
@@ -83,6 +85,7 @@ export default function App() {
   const [editingAttendee, setEditingAttendee] = useState<Attendee | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
   const [isExportOpen, setIsExportOpen] = useState(false);
+  const [isImportOpen, setIsImportOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
 
   const handleOpenAddModal = () => {
@@ -333,6 +336,92 @@ export default function App() {
     showToast('Base oficial de 86 pessoas sincronizada com sucesso!');
   };
 
+  // Import spreadsheet rows into Supabase (dedup by CPF + day)
+  const handleImportAttendees = async (imported: Attendee[]) => {
+    const cleanDoc = (v?: string) => (v || '').replace(/\D/g, '');
+
+    // Index existing rows by cpf+day so imports UPDATE instead of duplicating
+    const indexByKey = new Map<string, Attendee>();
+    attendees.forEach((a) =>
+      indexByKey.set(`${cleanDoc(a.document)}|${a.date || '21/08'}`, a)
+    );
+
+    let newCount = 0;
+    let updatedCount = 0;
+    let skippedCount = 0;
+    const idSuffix = Date.now();
+    const listToSync: Attendee[] = [];
+
+    imported.forEach((row, idx) => {
+      const name = (row.name || '').trim();
+      if (!name) {
+        skippedCount++;
+        return;
+      }
+      const day = row.date || '21/08';
+      const doc = cleanDoc(row.document);
+      const key = `${doc}|${day}`;
+
+      const existing = doc ? indexByKey.get(key) : undefined;
+      if (existing) {
+        // Same CPF on the same day: merge into the existing record
+        updatedCount++;
+        listToSync.push({
+          ...existing,
+          name,
+          exhibitor: row.exhibitor || existing.exhibitor,
+          document: row.document || existing.document,
+          role: row.role || existing.role,
+          stand: row.stand || existing.stand,
+          isCheckedIn: existing.isCheckedIn || row.isCheckedIn,
+          checkedInAt:
+            existing.checkedInAt ||
+            (row.isCheckedIn ? new Date().toISOString() : undefined),
+          checkedBy: existing.checkedBy ?? (row.isCheckedIn ? currentProfile.badge : undefined),
+        });
+      } else {
+        newCount++;
+        const newAtt: Attendee = {
+          id: `att-${day.includes('22') ? '22' : '21'}-m-${idSuffix}-${idx + 1}`,
+          rowIndex: 0,
+          date: day,
+          name,
+          exhibitor: row.exhibitor || 'Geral / Outros',
+          document: row.document || '',
+          role: row.role || 'Credenciado',
+          stand: row.stand || '',
+          isCheckedIn: Boolean(row.isCheckedIn),
+          checkedInAt: row.isCheckedIn ? new Date().toISOString() : undefined,
+          checkedBy: row.isCheckedIn ? currentProfile.badge : undefined,
+          rawValues: [],
+        };
+        listToSync.push(newAtt);
+        if (doc) indexByKey.set(key, newAtt);
+      }
+    });
+
+    if (listToSync.length === 0) {
+      showToast(
+        `Nenhuma linha válida na planilha (${skippedCount} ignoradas).`,
+        'info'
+      );
+      return;
+    }
+
+    const res = await syncAllAttendeesToSupabase(listToSync);
+    if (!res.success && res.error) {
+      showToast(`Erro ao importar: ${res.error}`, 'error');
+      return;
+    }
+    showToast(
+      `Planilha importada: ${newCount} novos • ${updatedCount} atualizados por CPF${
+        skippedCount ? ` • ${skippedCount} ignoradas` : ''
+      }`,
+      'success'
+    );
+    await loadAttendees(false);
+  };
+
   // Unique list of exhibitor names
   const exhibitorNames = useMemo(() => {
     const set = new Set<string>();
@@ -540,7 +629,7 @@ export default function App() {
           total={totalCount}
           checkedIn={checkedCount}
           totalExhibitors={exhibitorNames.length}
-          attendees={attendees}
+          attendees={activeScopedAttendees}
         />
 
         {/* Search, Filter & QR Scanner Bar */}
@@ -690,6 +779,13 @@ export default function App() {
         onRefreshData={() => loadAttendees(true)}
       />
 
+      {/* Spreadsheet Import Modal */}
+      <ImportModal
+        isOpen={isImportOpen}
+        onClose={() => setIsImportOpen(false)}
+        onImportAttendees={handleImportAttendees}
+      />
+
       {/* Settings & Supabase Status Modal */}
       <SettingsModal
         isOpen={isSettingsOpen}
@@ -700,6 +796,7 @@ export default function App() {
         onRefresh={handleRefresh}
         isSyncing={isSyncing}
         isTableMissing={isTableMissing}
+        onOpenImport={() => setIsImportOpen(true)}
       />
     </div>
   );
