@@ -2,11 +2,6 @@ import React from 'react';
 import {
   CheckCircle2,
   Clock,
-  User,
-  Building2,
-  FileText,
-  ShieldCheck,
-  Sparkles,
   Edit3,
 } from 'lucide-react';
 import { Attendee } from '../types';
@@ -74,11 +69,7 @@ export const AttendeeRow: React.FC<AttendeeRowProps> = ({
             </h4>
             {attendee.date && (
               <span
-                className={`text-[9px] font-black px-1.5 py-0.2 rounded-md ${
-                  attendee.date === '22/08'
-                    ? 'bg-indigo-100 text-indigo-800 border border-indigo-200/60'
-                    : 'bg-emerald-100 text-emerald-800 border border-emerald-200/60'
-                }`}
+                className="text-[9px] font-black px-1.5 py-0.2 rounded-md bg-indigo-100 text-indigo-800 border border-indigo-200/60"
               >
                 {attendee.date}
               </span>
@@ -104,7 +95,7 @@ export const AttendeeRow: React.FC<AttendeeRowProps> = ({
             <div className="flex items-center gap-1.5 mt-1 text-[10px] sm:text-[11px] font-bold text-emerald-700 flex-wrap">
               <span className="inline-flex items-center gap-1">
                 <Clock className="w-3 h-3 text-emerald-600" />
-                <span>Entrou às {attendee.checkedInAt || '21/08'}</span>
+                <span>Entrou às {attendee.checkedInAt || '--:--'}</span>
               </span>
               {attendee.checkedBy && (
                 <span className="px-1.5 py-0.2 rounded-md bg-emerald-100 text-emerald-800 text-[9px]">

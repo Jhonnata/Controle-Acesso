@@ -13,7 +13,7 @@ export interface UserProfile {
 export interface Attendee {
   id: string; // row index or unique id
   rowIndex: number; // 1-based row number in Google Sheets
-  date?: string; // '21/08' | '22/08'
+  date?: string; // Event day label like '21/08' or '22/08'
   name: string;
   exhibitor: string;
   document?: string; // CPF/RG/Badge ID

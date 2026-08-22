@@ -13,6 +13,12 @@ import {
   Clock,
 } from 'lucide-react';
 import { Attendee } from '../types';
+import {
+  getDefaultEventDate,
+  getEventDateDetails,
+  isValidEventDate,
+  normalizeEventDateInput,
+} from '../services/eventDates';
 
 export interface SaveAttendeeData {
   id?: string;
@@ -21,7 +27,7 @@ export interface SaveAttendeeData {
   document?: string;
   role?: string;
   stand?: string;
-  date: string; // '21/08' | '22/08'
+  date: string;
   isCheckedIn: boolean;
 }
 
@@ -51,7 +57,7 @@ export const AddAttendeeModal: React.FC<AddAttendeeModalProps> = ({
   exhibitorNames = [],
   exhibitors = [],
   defaultExhibitor = '',
-  defaultDate = '21/08',
+  defaultDate = getDefaultEventDate(),
   editingAttendee = null,
   onSaveAttendee,
 }) => {
@@ -67,7 +73,7 @@ export const AddAttendeeModal: React.FC<AddAttendeeModalProps> = ({
   const [customExhibitor, setCustomExhibitor] = useState('');
   const [document, setDocument] = useState('');
   const [role, setRole] = useState('Credenciado');
-  const [date, setDate] = useState('21/08');
+  const [date, setDate] = useState(getDefaultEventDate());
   const [markEnteredNow, setMarkEnteredNow] = useState(true);
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -81,7 +87,7 @@ export const AddAttendeeModal: React.FC<AddAttendeeModalProps> = ({
       setName(editingAttendee.name || '');
       setDocument(editingAttendee.document || '');
       setRole(editingAttendee.role || 'Credenciado');
-      setDate(editingAttendee.date || defaultDate || '21/08');
+      setDate(isValidEventDate(editingAttendee.date) ? editingAttendee.date : defaultDate);
       setMarkEnteredNow(Boolean(editingAttendee.isCheckedIn));
 
       const existingExhibitor = editingAttendee.exhibitor || '';
@@ -98,7 +104,7 @@ export const AddAttendeeModal: React.FC<AddAttendeeModalProps> = ({
       setName('');
       setDocument('');
       setRole('Credenciado');
-      setDate(defaultDate === '22/08' ? '22/08' : '21/08');
+      setDate(defaultDate);
       setMarkEnteredNow(true);
 
       if (defaultExhibitor && allExhibitors.includes(defaultExhibitor)) {
@@ -131,6 +137,10 @@ export const AddAttendeeModal: React.FC<AddAttendeeModalProps> = ({
       setError('Por favor, informe ou selecione a empresa expositora.');
       return;
     }
+    if (!isValidEventDate(date)) {
+      setError('Informe um dia válido no formato dd/mm.');
+      return;
+    }
 
     try {
       setIsSubmitting(true);
@@ -140,7 +150,7 @@ export const AddAttendeeModal: React.FC<AddAttendeeModalProps> = ({
         exhibitor: finalExhibitor,
         document: document.trim() || undefined,
         role: role.trim() || 'Credenciado',
-        date: date || '21/08',
+        date,
         isCheckedIn: markEnteredNow,
       });
 
@@ -192,38 +202,30 @@ export const AddAttendeeModal: React.FC<AddAttendeeModalProps> = ({
             </div>
           )}
 
-          {/* Dia do Evento (21/08 ou 22/08) */}
+          {/* Dia do Evento */}
           <div>
             <label className="text-xs font-black text-slate-800 mb-1.5 flex items-center gap-1.5">
               <Calendar className="w-4 h-4 text-pink-600" />
               <span>Dia do Evento *</span>
             </label>
-            <div className="grid grid-cols-2 gap-2">
-              <button
-                type="button"
-                onClick={() => setDate('21/08')}
-                className={`py-2.5 px-3 rounded-2xl font-black text-xs transition-all flex items-center justify-center gap-2 border ${
-                  date === '21/08'
-                    ? 'bg-slate-900 text-white border-slate-900 shadow-sm ring-2 ring-emerald-500/40'
-                    : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-                }`}
-              >
-                <span className={`w-2 h-2 rounded-full ${date === '21/08' ? 'bg-emerald-400' : 'bg-slate-400'}`} />
-                <span>21/08 (Hoje / Sexta)</span>
-              </button>
-
-              <button
-                type="button"
-                onClick={() => setDate('22/08')}
-                className={`py-2.5 px-3 rounded-2xl font-black text-xs transition-all flex items-center justify-center gap-2 border ${
-                  date === '22/08'
-                    ? 'bg-slate-900 text-white border-slate-900 shadow-sm ring-2 ring-indigo-500/40'
-                    : 'bg-slate-50 hover:bg-slate-100 text-slate-700 border-slate-200'
-                }`}
-              >
-                <span className={`w-2 h-2 rounded-full ${date === '22/08' ? 'bg-indigo-400' : 'bg-slate-400'}`} />
-                <span>22/08 (Sábado)</span>
-              </button>
+            <div className="space-y-2">
+              <input
+                type="text"
+                value={date}
+                onChange={(e) => setDate(normalizeEventDateInput(e.target.value))}
+                inputMode="numeric"
+                maxLength={5}
+                placeholder="dd/mm"
+                className="w-full px-3.5 py-2.5 bg-slate-50 border border-slate-200 rounded-2xl text-xs text-slate-900 font-bold focus:outline-none focus:border-pink-500 focus:bg-white transition-all"
+                required
+              />
+              {isValidEventDate(date) && (
+                <div className="text-[11px] text-slate-500">
+                  {getEventDateDetails(date).isToday
+                    ? `${date} • Hoje`
+                    : `${date} • ${getEventDateDetails(date).fullWeekday}`}
+                </div>
+              )}
             </div>
           </div>
 

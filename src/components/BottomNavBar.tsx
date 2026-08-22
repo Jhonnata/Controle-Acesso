@@ -4,7 +4,7 @@ import {
   Building2,
   QrCode,
   UserCircle,
-  Database,
+  Settings,
 } from 'lucide-react';
 import { UserProfile } from '../types';
 
@@ -78,13 +78,13 @@ export const BottomNavBar: React.FC<BottomNavBarProps> = ({
           </span>
         </button>
 
-        {/* Tab 4: Banco / Supabase */}
+        {/* Tab 4: Dados & Relatórios */}
         <button
           onClick={onOpenSettings}
           className="flex-1 py-1.5 px-2 rounded-2xl flex flex-col items-center gap-0.5 text-slate-500 hover:text-slate-900 transition-all"
         >
-          <Database className="w-4 h-4 text-emerald-600" />
-          <span className="text-[10px] font-bold">Supabase</span>
+          <Settings className="w-4 h-4 text-emerald-600" />
+          <span className="text-[10px] font-bold">Dados & Relatórios</span>
         </button>
       </div>
     </div>

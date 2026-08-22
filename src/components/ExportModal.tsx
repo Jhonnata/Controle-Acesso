@@ -9,15 +9,18 @@ import {
   FileText,
   Database,
   RotateCw,
-  Sparkles,
   CheckCircle2,
   Building,
-  TrendingUp,
   Calendar,
   ShieldCheck,
+  Users,
 } from 'lucide-react';
 import { Attendee } from '../types';
-import { generateCSVReport, generateExhibitorSummaryCSV } from '../services/storage';
+import {
+  generateCSVReport,
+  generateEnteredByExhibitorCSV,
+  generateExhibitorSummaryCSV,
+} from '../services/storage';
 import {
   syncAllAttendeesToSupabase,
   recordDay22ToSupabase,
@@ -38,16 +41,23 @@ interface ExhibitorReportStat {
   attendees: Attendee[];
 }
 
+interface EnteredExhibitorReportStat {
+  name: string;
+  checkedIn: number;
+  attendees: Attendee[];
+}
+
 export const ExportModal: React.FC<ExportModalProps> = ({
   isOpen,
   onClose,
   attendees,
   onRefreshData,
 }) => {
-  const [activeTab, setActiveTab] = useState<'downloads' | 'preview' | 'summary'>('downloads');
+  const [activeTab, setActiveTab] = useState<'downloads' | 'preview' | 'summary' | 'enteredByCompany'>('downloads');
   const [selectedDay, setSelectedDay] = useState<'all' | '21/08' | '22/08'>('all');
   const [copied, setCopied] = useState(false);
   const [copiedSummary, setCopiedSummary] = useState(false);
+  const [copiedEnteredByCompany, setCopiedEnteredByCompany] = useState(false);
   const [isSyncingSupabase, setIsSyncingSupabase] = useState(false);
   const [isRecordingDay22, setIsRecordingDay22] = useState(false);
   const [syncSuccess, setSyncSuccess] = useState<string | null>(null);
@@ -85,6 +95,18 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     a.name.localeCompare(b.name, 'pt-BR')
   );
 
+  const enteredByCompanyStats: EnteredExhibitorReportStat[] = exhibitorStats
+    .map((exhibitor) => ({
+      name: exhibitor.name,
+      checkedIn: exhibitor.checkedIn,
+      attendees: exhibitor.attendees
+        .filter((a) => a.isCheckedIn)
+        .sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')),
+    }))
+    .filter((exhibitor) => exhibitor.attendees.length > 0);
+
+  const companiesWithEntries = enteredByCompanyStats.length;
+
   const handleDownloadFullCSV = () => {
     const csvContent = generateCSVReport(filteredList);
     const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
@@ -115,6 +137,21 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     URL.revokeObjectURL(url);
   };
 
+  const handleDownloadEnteredByCompanyCSV = () => {
+    const csvContent = generateEnteredByExhibitorCSV(filteredList);
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    const today = new Date().toISOString().slice(0, 10);
+    const dayLabel = selectedDay === 'all' ? 'geral' : selectedDay.replace('/', '_');
+    link.setAttribute('href', url);
+    link.setAttribute('download', `relatorio_empresas_entradas_${dayLabel}_${today}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
+
   const handleCopyStatusTable = () => {
     const header = "Expositor\tDia\tNome\tCPF\tStatus\tHorário de Entrada\tOperador";
     const lines = filteredList.map(
@@ -138,6 +175,21 @@ export const ExportModal: React.FC<ExportModalProps> = ({
     navigator.clipboard.writeText([header, ...lines].join('\n'));
     setCopiedSummary(true);
     setTimeout(() => setCopiedSummary(false), 2500);
+  };
+
+  const handleCopyEnteredByCompanyTable = () => {
+    const header = 'Expositor\tNome\tCPF\tCargo\tEstande\tHorário de Entrada\tOperador';
+    const lines = enteredByCompanyStats.flatMap((company) =>
+      company.attendees.map(
+        (attendee) =>
+          `${company.name}\t${attendee.name}\t${attendee.document || ''}\t${attendee.role || 'Credenciado'}\t${
+            attendee.stand || ''
+          }\t${attendee.checkedInAt || 'Presente'}\t${attendee.checkedBy || 'Portaria'}`
+      )
+    );
+    navigator.clipboard.writeText([header, ...lines].join('\n'));
+    setCopiedEnteredByCompany(true);
+    setTimeout(() => setCopiedEnteredByCompany(false), 2500);
   };
 
   const handleDownloadJSONBackup = () => {
@@ -258,6 +310,15 @@ export const ExportModal: React.FC<ExportModalProps> = ({
           >
             <Building className="w-3.5 h-3.5 text-indigo-600" />
             <span>Por Estande ({exhibitorStats.length})</span>
+          </button>
+          <button
+            onClick={() => setActiveTab('enteredByCompany')}
+            className={`flex-1 py-2 rounded-xl transition-all flex items-center justify-center gap-1.5 ${
+              activeTab === 'enteredByCompany' ? 'bg-white text-slate-900 shadow-xs' : 'text-slate-500 hover:text-slate-900'
+            }`}
+          >
+            <Users className="w-3.5 h-3.5 text-emerald-600" />
+            <span>Entradas por Empresa</span>
           </button>
           <button
             onClick={() => setActiveTab('preview')}
@@ -455,6 +516,38 @@ export const ExportModal: React.FC<ExportModalProps> = ({
                 </div>
               </div>
 
+              <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-2.5">
+                <div className="flex items-center justify-between">
+                  <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                    <Users className="w-4 h-4 text-emerald-600" />
+                    <span>Entradas Confirmadas por Empresa (.CSV)</span>
+                  </div>
+                  <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800">
+                    {companiesWithEntries} Empresas
+                  </span>
+                </div>
+                <p className="text-[11px] text-slate-500 leading-relaxed">
+                  Exporta somente quem já entrou, agrupado por empresa, com nome, documento, cargo, estande, horário de entrada e operador responsável.
+                </p>
+                <div className="flex gap-2">
+                  <button
+                    onClick={handleDownloadEnteredByCompanyCSV}
+                    className="flex-1 py-2.5 px-4 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-white font-black flex items-center justify-center gap-2 active:scale-95 transition-all shadow-xs"
+                  >
+                    <Download className="w-4 h-4" />
+                    <span>Baixar Relatório por Empresa</span>
+                  </button>
+
+                  <button
+                    onClick={handleCopyEnteredByCompanyTable}
+                    className="py-2.5 px-3 rounded-xl bg-white border border-slate-200 hover:bg-slate-100 text-slate-700 font-bold flex items-center justify-center gap-1.5 transition-colors"
+                  >
+                    {copiedEnteredByCompany ? <Check className="w-4 h-4 text-emerald-600" /> : <Copy className="w-4 h-4" />}
+                    <span>{copiedEnteredByCompany ? 'Copiado!' : 'Copiar'}</span>
+                  </button>
+                </div>
+              </div>
+
               {/* Card 3: JSON Full Backup */}
               <div className="p-3.5 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-2">
                 <div>
@@ -530,6 +623,90 @@ export const ExportModal: React.FC<ExportModalProps> = ({
               >
                 <Download className="w-4 h-4 text-emerald-400" />
                 <span>Exportar Resumo de Estandes para Planilha</span>
+              </button>
+            </div>
+          )}
+
+          {activeTab === 'enteredByCompany' && (
+            <div className="space-y-3">
+              <div className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 flex items-center justify-between gap-3">
+                <div>
+                  <div className="font-bold text-slate-900 flex items-center gap-1.5">
+                    <Users className="w-4 h-4 text-emerald-600" />
+                    <span>Entradas confirmadas por empresa</span>
+                  </div>
+                  <p className="text-[11px] text-slate-500">
+                    {checkedIn} entradas confirmadas em {companiesWithEntries} empresas no filtro atual.
+                  </p>
+                </div>
+                <button
+                  onClick={handleDownloadEnteredByCompanyCSV}
+                  className="px-3 py-2 bg-slate-900 hover:bg-slate-800 text-white font-bold rounded-xl text-xs flex items-center gap-1.5 shrink-0 active:scale-95 transition-all"
+                >
+                  <Download className="w-3.5 h-3.5 text-emerald-400" />
+                  <span>Exportar CSV</span>
+                </button>
+              </div>
+
+              {enteredByCompanyStats.length === 0 ? (
+                <div className="p-5 rounded-2xl bg-slate-50 border border-slate-200 text-center text-slate-500">
+                  <div className="font-bold text-slate-700">Nenhuma entrada confirmada</div>
+                  <p className="text-[11px] mt-1">
+                    Não há participantes com check-in confirmado para o filtro selecionado.
+                  </p>
+                </div>
+              ) : (
+                <div className="space-y-3 max-h-72 overflow-y-auto pr-1">
+                  {enteredByCompanyStats.map((company) => (
+                    <div key={company.name} className="p-4 rounded-2xl bg-slate-50 border border-slate-200/80 space-y-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="min-w-0">
+                          <div className="font-black text-slate-900 text-sm truncate">{company.name}</div>
+                          <div className="text-[11px] text-slate-500">
+                            {company.checkedIn} {company.checkedIn === 1 ? 'entrada confirmada' : 'entradas confirmadas'}
+                          </div>
+                        </div>
+                        <span className="text-[10px] font-black uppercase px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-800 shrink-0">
+                          {company.checkedIn} presentes
+                        </span>
+                      </div>
+
+                      <div className="space-y-2">
+                        {company.attendees.map((attendee) => (
+                          <div
+                            key={attendee.id}
+                            className="p-3 rounded-xl bg-white border border-slate-200/80 flex items-start justify-between gap-3"
+                          >
+                            <div className="min-w-0">
+                              <div className="font-bold text-slate-900 truncate">{attendee.name}</div>
+                              <div className="text-[11px] text-slate-500">
+                                {attendee.document || 'Sem documento'} • {attendee.role || 'Credenciado'}
+                              </div>
+                              <div className="text-[11px] text-slate-500">
+                                {attendee.stand || 'Sem estande'} • {attendee.checkedBy || 'Portaria'}
+                              </div>
+                            </div>
+                            <div className="text-[11px] font-bold text-emerald-700 shrink-0">
+                              {attendee.checkedInAt || 'Presente'}
+                            </div>
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              <button
+                onClick={handleCopyEnteredByCompanyTable}
+                className="w-full py-2.5 px-4 rounded-xl bg-white border border-slate-200 hover:bg-slate-50 text-slate-700 font-black flex items-center justify-center gap-2 text-xs transition-all"
+              >
+                {copiedEnteredByCompany ? (
+                  <Check className="w-4 h-4 text-emerald-600" />
+                ) : (
+                  <Copy className="w-4 h-4" />
+                )}
+                <span>{copiedEnteredByCompany ? 'Tabela copiada' : 'Copiar tabela agrupada'}</span>
               </button>
             </div>
           )}

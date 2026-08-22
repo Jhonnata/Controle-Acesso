@@ -1,5 +1,10 @@
 import { createClient, SupabaseClient } from '@supabase/supabase-js';
 import { Attendee, UserRoleId, UserProfile } from '../types';
+import {
+  ensureEventDate,
+  getDefaultEventDate,
+  normalizeEventDateInput,
+} from './eventDates';
 
 export const DEFAULT_SUPABASE_URL = 'https://myvetgtnheigkzbbhpng.supabase.co';
 export const DEFAULT_SUPABASE_ANON_KEY =
@@ -1179,15 +1184,16 @@ function parseDateValue(item: any): string {
     item.event_date ||
     '';
 
-  const dateStr = String(rawDate).trim();
-  if (dateStr.includes('22')) return '22/08';
-  if (dateStr.includes('21')) return '21/08';
+  const dateStr = normalizeEventDateInput(String(rawDate).trim());
+  if (dateStr.length === 5) return ensureEventDate(dateStr, getDefaultEventDate());
 
   const idStr = String(item.id || '');
+  const idDateMatch = idStr.match(/^att-(\d{2})-(\d{2})-/);
+  if (idDateMatch) return ensureEventDate(`${idDateMatch[1]}/${idDateMatch[2]}`, getDefaultEventDate());
   if (/^att-21-/.test(idStr) || /^att-d21-/.test(idStr)) return '21/08';
   if (/^att-22-/.test(idStr) || /^att-d22-/.test(idStr)) return '22/08';
 
-  return '21/08';
+  return getDefaultEventDate();
 }
 
 export function mapRawToAttendee(item: any, index: number): Attendee {
@@ -1380,7 +1386,7 @@ export async function updateAttendeeInSupabase(
     name: attendee.name,
     exhibitor: attendee.exhibitor,
     cpf: attendee.document?.trim() || null,
-    date: attendee.date || '21/08',
+    date: ensureEventDate(attendee.date, getDefaultEventDate()),
     is_checked_in: isCheckedIn,
     status: statusStr,
     entry_time: timeStr,
@@ -1451,7 +1457,7 @@ export async function batchUpdateExhibitorInSupabase(
     name: a.name,
     exhibitor: a.exhibitor,
     cpf: a.document?.trim() || null,
-    date: a.date || '21/08',
+    date: ensureEventDate(a.date, getDefaultEventDate()),
     is_checked_in: isCheckedIn,
     status: statusStr,
     entry_time: timeStr,
@@ -1554,7 +1560,7 @@ export async function syncAllAttendeesToSupabase(
     name: a.name,
     exhibitor: a.exhibitor,
     cpf: a.document?.trim() || null,
-    date: a.date || '21/08',
+    date: ensureEventDate(a.date, getDefaultEventDate()),
     is_checked_in: Boolean(a.isCheckedIn),
     status: a.isCheckedIn ? 'Entrou' : 'Pendente',
     entry_time: a.checkedInAt || null,
@@ -1596,7 +1602,7 @@ export async function seedInitialDatasetToSupabase(): Promise<{
         name: r.name,
         exhibitor: r.exhibitor,
         cpf: r.cpf?.trim() || null,
-        date: r.date || '21/08',
+        date: ensureEventDate(r.date, getDefaultEventDate()),
         is_checked_in: existing ? existing.is_checked_in : false,
         status: existing ? existing.status : 'Pendente',
         entry_time: existing ? existing.entry_time : null,
@@ -1633,9 +1639,9 @@ export async function saveOrUpdateAttendeeInSupabase(
   },
   operatorTitle: string = 'Portaria'
 ): Promise<{ success: boolean; attendee: Attendee; error?: string }> {
-  const dateStr = attData.date || '21/08';
+  const dateStr = ensureEventDate(attData.date, getDefaultEventDate());
   const isEditing = Boolean(attData.id);
-  const targetId = attData.id || (dateStr.includes('22') ? 'att-22-m-' : 'att-21-m-') + Date.now();
+  const targetId = attData.id || `att-${dateStr.replace('/', '-')}-m-${Date.now()}`;
 
   const nowTime = attData.isCheckedIn
     ? new Date().toLocaleTimeString('pt-BR', { hour: '2-digit', minute: '2-digit', second: '2-digit' })
@@ -1730,7 +1736,7 @@ export async function addAttendeeToSupabase(
       document: newAtt.document,
       role: newAtt.role,
       stand: newAtt.stand,
-      date: newAtt.date || '21/08',
+        date: ensureEventDate(newAtt.date, getDefaultEventDate()),
       isCheckedIn: Boolean(newAtt.isCheckedIn),
     },
     operatorTitle

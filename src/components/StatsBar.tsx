@@ -58,14 +58,25 @@ export const StatsBar: React.FC<StatsBarProps> = ({
     hour: h,
   }));
 
+  // Extract local hour from any stored timestamp format
+  // ('HH:mm:ss', 'DD/MM/YYYY HH:mm:ss' or legacy ISO strings)
+  const getCheckInHour = (value?: string): number | null => {
+    if (!value) return null;
+    const str = String(value).trim();
+    if (/^\d{4}-\d{2}-\d{2}/.test(str)) {
+      const d = new Date(str);
+      return isNaN(d.getTime()) ? null : d.getHours();
+    }
+    const match = str.match(/(\d{1,2}):(\d{2})/);
+    return match ? parseInt(match[1], 10) : null;
+  };
+
   // Count attendees per exact hour of check-in
   const hourlyCounts = hourlyBuckets.map((bucket) => ({
     ...bucket,
-    count: attendees.filter((a) => {
-      if (!a.isCheckedIn || !a.checkedInAt) return false;
-      const match = String(a.checkedInAt).match(/(\d{1,2}):/);
-      return match ? parseInt(match[1], 10) === bucket.hour : false;
-    }).length,
+    count: attendees.filter(
+      (a) => a.isCheckedIn && getCheckInHour(a.checkedInAt) === bucket.hour
+    ).length,
   }));
 
   const maxHourlyCount = Math.max(1, ...hourlyCounts.map((b) => b.count), checkedIn > 0 ? 1 : 1);
@@ -133,11 +144,14 @@ export const StatsBar: React.FC<StatsBarProps> = ({
                     }`}
                   >
                     <div className="relative h-full w-full flex flex-col items-center justify-end">
-                      {hasCheckins && (
-                        <span className="absolute -top-4 text-[9px] font-black text-emerald-800 bg-emerald-100 px-1 rounded-sm shadow-2xs whitespace-nowrap">
-                          {bucket.count}
-                        </span>
-                      )}
+                        {hasCheckins && (
+                          <span
+                            className="absolute text-[9px] font-black text-emerald-800 bg-emerald-100 px-1 rounded-sm shadow-2xs whitespace-nowrap"
+                            style={{ top: '-10px' }}
+                          >
+                            {bucket.count}
+                          </span>
+                        )}
                       <div
                         className={`w-full rounded-t-md transition-all duration-500 ${
                           hasCheckins

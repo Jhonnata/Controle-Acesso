@@ -10,7 +10,7 @@ import {
   supabase,
   PROFILES,
 } from './services/supabase';
-import { groupAttendeesByExhibitor } from './services/sheets';
+import { formatCurrentTimestamp, groupAttendeesByExhibitor } from './services/sheets';
 import {
   Attendee,
   FilterStatus,
@@ -25,8 +25,7 @@ import { AttendeeRow } from './components/AttendeeRow';
 import { ScannerModal } from './components/ScannerModal';
 import { AddAttendeeModal, SaveAttendeeData } from './components/AddAttendeeModal';
 import { SettingsModal } from './components/SettingsModal';
-import { ImportModal } from './components/ImportModal';
-import { ExportModal } from './components/ExportModal';
+import { ConfigModal } from './components/ConfigModal';
 import { ProfileSelectorModal } from './components/ProfileSelectorModal';
 import { BottomNavBar } from './components/BottomNavBar';
 import {
@@ -41,6 +40,13 @@ import {
   AlertTriangle,
 } from 'lucide-react';
 import confetti from 'canvas-confetti';
+import {
+  getDefaultEventDate,
+  isValidEventDate,
+  normalizeEventDateInput,
+  resolvePreferredEventDate,
+  sortEventDates,
+} from './services/eventDates';
 
 const STORAGE_KEY_ROLE = 'access_control_user_role';
 
@@ -74,7 +80,7 @@ export default function App() {
 
   // Filter & Search states
   const [searchQuery, setSearchQuery] = useState('');
-  const [selectedDate, setSelectedDate] = useState<string>('21/08'); // 'all' | '21/08' | '22/08'
+  const [selectedDate, setSelectedDate] = useState<string>(() => getDefaultEventDate());
   const [filterStatus, setFilterStatus] = useState<FilterStatus>('all');
   const [selectedExhibitor, setSelectedExhibitor] = useState('');
   const [sortOption, setSortOption] = useState<SortOption>('exhibitor_asc');
@@ -84,8 +90,7 @@ export default function App() {
   const [isAddModalOpen, setIsAddModalOpen] = useState(false);
   const [editingAttendee, setEditingAttendee] = useState<Attendee | null>(null);
   const [isSettingsOpen, setIsSettingsOpen] = useState(false);
-  const [isExportOpen, setIsExportOpen] = useState(false);
-  const [isImportOpen, setIsImportOpen] = useState(false);
+  const [isConfigOpen, setIsConfigOpen] = useState(false);
   const [isProfileModalOpen, setIsProfileModalOpen] = useState(false);
 
   const handleOpenAddModal = () => {
@@ -337,18 +342,31 @@ export default function App() {
   };
 
   // Import spreadsheet rows into Supabase (dedup by CPF + day)
-  const handleImportAttendees = async (imported: Attendee[]) => {
+  const handleImportAttendees = async (
+    imported: Attendee[],
+    _headers: string[],
+    _mapping: any,
+    selectedImportDay: string
+  ) => {
     const cleanDoc = (v?: string) => (v || '').replace(/\D/g, '');
+    const normalizedImportDay = normalizeEventDateInput(selectedImportDay);
 
-    // Index existing rows by cpf+day so imports UPDATE instead of duplicating
-    const indexByKey = new Map<string, Attendee>();
-    attendees.forEach((a) =>
-      indexByKey.set(`${cleanDoc(a.document)}|${a.date || '21/08'}`, a)
-    );
+    if (!isValidEventDate(normalizedImportDay)) {
+      showToast('Dia de importação inválido. Use o formato dd/mm.', 'error');
+      return;
+    }
+
+    const existingCpfDayKeys = new Set<string>();
+    attendees.forEach((a) => {
+      const normalizedCpf = cleanDoc(a.document);
+      if (!normalizedCpf) return;
+      existingCpfDayKeys.add(`${normalizedCpf}|${normalizeEventDateInput(a.date || getDefaultEventDate())}`);
+    });
 
     let newCount = 0;
-    let updatedCount = 0;
     let skippedCount = 0;
+    let skippedExistingCount = 0;
+    let missingCpfCount = 0;
     const idSuffix = Date.now();
     const listToSync: Attendee[] = [];
 
@@ -358,51 +376,41 @@ export default function App() {
         skippedCount++;
         return;
       }
-      const day = row.date || '21/08';
+      const day = normalizedImportDay;
       const doc = cleanDoc(row.document);
-      const key = `${doc}|${day}`;
+      const key = doc ? `${doc}|${day}` : '';
 
-      const existing = doc ? indexByKey.get(key) : undefined;
-      if (existing) {
-        // Same CPF on the same day: merge into the existing record
-        updatedCount++;
-        listToSync.push({
-          ...existing,
-          name,
-          exhibitor: row.exhibitor || existing.exhibitor,
-          document: row.document || existing.document,
-          role: row.role || existing.role,
-          stand: row.stand || existing.stand,
-          isCheckedIn: existing.isCheckedIn || row.isCheckedIn,
-          checkedInAt:
-            existing.checkedInAt ||
-            (row.isCheckedIn ? new Date().toISOString() : undefined),
-          checkedBy: existing.checkedBy ?? (row.isCheckedIn ? currentProfile.badge : undefined),
-        });
-      } else {
-        newCount++;
-        const newAtt: Attendee = {
-          id: `att-${day.includes('22') ? '22' : '21'}-m-${idSuffix}-${idx + 1}`,
-          rowIndex: 0,
-          date: day,
-          name,
-          exhibitor: row.exhibitor || 'Geral / Outros',
-          document: row.document || '',
-          role: row.role || 'Credenciado',
-          stand: row.stand || '',
-          isCheckedIn: Boolean(row.isCheckedIn),
-          checkedInAt: row.isCheckedIn ? new Date().toISOString() : undefined,
-          checkedBy: row.isCheckedIn ? currentProfile.badge : undefined,
-          rawValues: [],
-        };
-        listToSync.push(newAtt);
-        if (doc) indexByKey.set(key, newAtt);
+      if (!doc) {
+        missingCpfCount++;
       }
+
+      if (doc && existingCpfDayKeys.has(key)) {
+        skippedExistingCount++;
+        return;
+      }
+
+      newCount++;
+      const newAtt: Attendee = {
+        id: `att-${day.replace('/', '-')}-m-${idSuffix}-${idx + 1}`,
+        rowIndex: 0,
+        date: day,
+        name,
+        exhibitor: row.exhibitor || 'Geral / Outros',
+        document: row.document || '',
+        role: row.role || 'Credenciado',
+        stand: row.stand || '',
+        isCheckedIn: Boolean(row.isCheckedIn),
+        checkedInAt: row.isCheckedIn ? formatCurrentTimestamp() : undefined,
+        checkedBy: row.isCheckedIn ? currentProfile.badge : undefined,
+        rawValues: [],
+      };
+      listToSync.push(newAtt);
+      if (doc) existingCpfDayKeys.add(key);
     });
 
     if (listToSync.length === 0) {
       showToast(
-        `Nenhuma linha válida na planilha (${skippedCount} ignoradas).`,
+        `Nenhuma nova linha para importar em ${normalizedImportDay} (${skippedExistingCount} CPFs já existentes${skippedCount ? ` • ${skippedCount} inválidas` : ''}).`,
         'info'
       );
       return;
@@ -414,9 +422,9 @@ export default function App() {
       return;
     }
     showToast(
-      `Planilha importada: ${newCount} novos • ${updatedCount} atualizados por CPF${
-        skippedCount ? ` • ${skippedCount} ignoradas` : ''
-      }`,
+      `Planilha importada em ${normalizedImportDay}: ${newCount} inseridos • ${skippedExistingCount} já existentes no dia${
+        skippedCount ? ` • ${skippedCount} inválidas` : ''
+      }${missingCpfCount ? ` • ${missingCpfCount} sem CPF` : ''}`,
       'success'
     );
     await loadAttendees(false);
@@ -433,13 +441,24 @@ export default function App() {
     return Array.from(set).sort((a, b) => a.localeCompare(b, 'pt-BR'));
   }, [attendees]);
 
+  const availableDates = useMemo(() => {
+    const attendeeDates = attendees.map((a) => a.date || '').filter(Boolean);
+    return sortEventDates([getDefaultEventDate(), selectedDate, ...attendeeDates]);
+  }, [attendees, selectedDate]);
+
+  useEffect(() => {
+    const preferredDate = resolvePreferredEventDate(availableDates);
+    if (!selectedDate || !availableDates.includes(selectedDate)) {
+      setSelectedDate(preferredDate);
+    }
+  }, [availableDates, selectedDate]);
+
   // Filter and sort attendees
   const filteredAttendees = useMemo(() => {
     let result = [...attendees];
 
-    // Date filter (21/08, 22/08 or all)
     if (selectedDate && selectedDate !== 'all') {
-      result = result.filter((a) => (a.date || '21/08') === selectedDate);
+      result = result.filter((a) => normalizeEventDateInput(a.date || getDefaultEventDate()) === selectedDate);
     }
 
     // Status filter
@@ -489,20 +508,10 @@ export default function App() {
     return groupAttendeesByExhibitor(filteredAttendees);
   }, [filteredAttendees]);
 
-  // Count per day
-  const day21Count = useMemo(
-    () => attendees.filter((a) => (a.date || '21/08') === '21/08').length,
-    [attendees]
-  );
-  const day22Count = useMemo(
-    () => attendees.filter((a) => a.date === '22/08').length,
-    [attendees]
-  );
-
   // Active view count (scoped to selected date for consistent operator view)
   const activeScopedAttendees = useMemo(() => {
     if (selectedDate && selectedDate !== 'all') {
-      return attendees.filter((a) => (a.date || '21/08') === selectedDate);
+      return attendees.filter((a) => normalizeEventDateInput(a.date || getDefaultEventDate()) === selectedDate);
     }
     return attendees;
   }, [attendees, selectedDate]);
@@ -553,13 +562,11 @@ export default function App() {
         checkedInCount={checkedCount}
         selectedDate={selectedDate}
         onSelectedDateChange={setSelectedDate}
-        day21Count={day21Count}
-        day22Count={day22Count}
+        availableDates={availableDates}
         isSyncing={isSyncing}
         onRefresh={handleRefresh}
         onOpenAddModal={handleOpenAddModal}
-        onOpenExport={() => setIsExportOpen(true)}
-        onOpenSettings={() => setIsSettingsOpen(true)}
+        onOpenConfig={() => setIsConfigOpen(true)}
         currentProfile={currentProfile}
         onOpenProfileSelector={() => setIsProfileModalOpen(true)}
       />
@@ -569,7 +576,7 @@ export default function App() {
         {/* Table creation helper banner if table missing */}
         {isTableMissing && (
           <div
-            onClick={() => setIsSettingsOpen(true)}
+            onClick={() => setIsConfigOpen(true)}
             className="p-3 rounded-2xl bg-amber-50 border border-amber-200 text-amber-900 flex items-center justify-between gap-2 cursor-pointer shadow-2xs hover:bg-amber-100/70 transition-colors"
           >
             <div className="flex items-center gap-2 min-w-0">
@@ -771,32 +778,21 @@ export default function App() {
         onSaveAttendee={handleSaveAttendee}
       />
 
-      {/* Export Reports Modal */}
-      <ExportModal
-        isOpen={isExportOpen}
-        onClose={() => setIsExportOpen(false)}
-        attendees={attendees}
-        onRefreshData={() => loadAttendees(true)}
-      />
-
-      {/* Spreadsheet Import Modal */}
-      <ImportModal
-        isOpen={isImportOpen}
-        onClose={() => setIsImportOpen(false)}
-        onImportAttendees={handleImportAttendees}
-      />
-
-      {/* Settings & Supabase Status Modal */}
+      {/* Dados & Relatórios */}
       <SettingsModal
         isOpen={isSettingsOpen}
         onClose={() => setIsSettingsOpen(false)}
         totalAttendeesCount={totalCount}
         checkedInCount={checkedCount}
-        onSeedSupabase={handleSeedSupabase}
+        attendees={attendees}
+        onImportAttendees={handleImportAttendees}
+      />
+
+      <ConfigModal
+        isOpen={isConfigOpen}
+        onClose={() => setIsConfigOpen(false)}
         onRefresh={handleRefresh}
-        isSyncing={isSyncing}
         isTableMissing={isTableMissing}
-        onOpenImport={() => setIsImportOpen(true)}
       />
     </div>
   );

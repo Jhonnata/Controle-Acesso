@@ -308,3 +308,47 @@ export function generateExhibitorSummaryCSV(attendees: Attendee[]): string {
   return '\uFEFF' + csvContent;
 }
 
+/**
+ * Generate CSV of confirmed entries grouped by exhibitor/company
+ */
+export function generateEnteredByExhibitorCSV(attendees: Attendee[]): string {
+  const checkedInAttendees = attendees
+    .filter((a) => a.isCheckedIn)
+    .sort((a, b) => {
+      const exhibitorCompare = (a.exhibitor || 'Outros').localeCompare(
+        b.exhibitor || 'Outros',
+        'pt-BR'
+      );
+      if (exhibitorCompare !== 0) return exhibitorCompare;
+      return a.name.localeCompare(b.name, 'pt-BR');
+    });
+
+  const headers = [
+    'Expositor / Empresa',
+    'Nome do Participante',
+    'CPF / Documento',
+    'Cargo / Função',
+    'Estande',
+    'Horário de Entrada',
+    'Operador Responsável',
+  ];
+
+  const escapeCell = (val: any) => {
+    if (val === undefined || val === null) return '""';
+    const str = String(val).replace(/"/g, '""');
+    return `"${str}"`;
+  };
+
+  const rows = checkedInAttendees.map((a) => [
+    escapeCell(a.exhibitor || 'Outros'),
+    escapeCell(a.name),
+    escapeCell(a.document || ''),
+    escapeCell(a.role || 'Credenciado'),
+    escapeCell(a.stand || ''),
+    escapeCell(a.checkedInAt || 'Presente'),
+    escapeCell(a.checkedBy || 'Portaria'),
+  ]);
+
+  const csvContent = [headers.map(escapeCell).join(';'), ...rows.map((r) => r.join(';'))].join('\r\n');
+  return '\uFEFF' + csvContent;
+}

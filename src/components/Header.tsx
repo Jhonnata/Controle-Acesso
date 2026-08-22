@@ -1,24 +1,28 @@
 import React from 'react';
 import {
-  ShieldCheck,
   RefreshCw,
   Plus,
   ChevronDown,
+  Settings,
 } from 'lucide-react';
 import { UserProfile } from '../types';
+import {
+  getDefaultEventDate,
+  getCurrentWeekDates,
+  getEventDateDetails,
+  sortEventDates,
+} from '../services/eventDates';
 
 interface HeaderProps {
   totalAttendees: number;
   checkedInCount: number;
   selectedDate: string;
   onSelectedDateChange: (date: string) => void;
-  day21Count: number;
-  day22Count: number;
+  availableDates: string[];
   isSyncing: boolean;
   onRefresh: () => void;
   onOpenAddModal: () => void;
-  onOpenExport: () => void;
-  onOpenSettings: () => void;
+  onOpenConfig: () => void;
   currentProfile: UserProfile;
   onOpenProfileSelector: () => void;
 }
@@ -28,26 +32,24 @@ export const Header: React.FC<HeaderProps> = ({
   checkedInCount,
   selectedDate,
   onSelectedDateChange,
-  day21Count,
-  day22Count,
+  availableDates,
   isSyncing,
   onRefresh,
   onOpenAddModal,
-  onOpenExport,
-  onOpenSettings,
+  onOpenConfig,
   currentProfile,
   onOpenProfileSelector,
 }) => {
-  // Title text depending on selected date
-  const dateTitle =
-    selectedDate === '21/08'
-      ? 'Sexta-feira, 21 Ago'
-      : 'Sábado, 22 Ago';
-
-  const dateSubtitle =
-    selectedDate === '21/08'
-      ? `${day21Count} Credenciados (Hoje)`
-      : `${day22Count} Credenciados`;
+  const sortedDates = sortEventDates(availableDates);
+  const fallbackDate = sortedDates[sortedDates.length - 1] || getDefaultEventDate();
+  const activeDate = sortedDates.includes(selectedDate) ? selectedDate : fallbackDate;
+  const activeDetails = getEventDateDetails(activeDate);
+  const weekDates = getCurrentWeekDates();
+  const dateTitle = activeDetails.title;
+  const activeCount = totalAttendees;
+  const dateSubtitle = activeDetails.isToday
+    ? `${activeCount} Credenciados (Hoje)`
+    : `${activeCount} Credenciados`;
 
   return (
     <header className="sticky top-0 z-30 bg-[#F4F7FA]/95 backdrop-blur-xl px-4 pt-4 pb-3 border-b border-slate-200/40">
@@ -82,6 +84,14 @@ export const Header: React.FC<HeaderProps> = ({
               title="Sincronizar com Supabase"
             >
               <RefreshCw className={`w-4 h-4 ${isSyncing ? 'animate-spin text-emerald-600' : ''}`} />
+            </button>
+
+            <button
+              onClick={onOpenConfig}
+              className="w-10 h-10 rounded-[18px] bg-white border border-slate-200/60 shadow-2xs flex items-center justify-center text-slate-600 hover:text-slate-900 active:scale-95 transition-all"
+              title="Configurações"
+            >
+              <Settings className="w-4 h-4 text-emerald-600" />
             </button>
 
             {/* Operator Avatar Button with notification dot */}
@@ -122,80 +132,58 @@ export const Header: React.FC<HeaderProps> = ({
             </button>
           </div>
 
-          {/* Interactive Days Pills Row: Centered on Today (21) */}
-          <div className="grid grid-cols-5 gap-1.5 text-center select-none pt-0.5">
-            {/* 1. Dia 19 (Qua) - Inativo */}
-            <div className="py-2 px-1 rounded-2xl bg-white/40 border border-slate-200/30 text-slate-300 flex flex-col items-center justify-center opacity-40 cursor-not-allowed">
-              <div className="text-[9px] uppercase font-bold text-slate-400">Qua</div>
-              <div className="text-xs font-bold text-slate-400 mt-0.5">19</div>
-              <div className="w-1.5 h-1.5 rounded-full bg-transparent mt-1" />
-            </div>
+          <div className="grid grid-cols-7 gap-1 text-center select-none pt-0.5">
+            {weekDates.map((weekItem) => {
+              const details = getEventDateDetails(weekItem.eventDate);
+              const isSelected = selectedDate === weekItem.eventDate;
+              const isEnabled = sortedDates.includes(weekItem.eventDate);
 
-            {/* 2. Dia 20 (Qui) - Inativo */}
-            <div className="py-2 px-1 rounded-2xl bg-white/40 border border-slate-200/30 text-slate-300 flex flex-col items-center justify-center opacity-40 cursor-not-allowed">
-              <div className="text-[9px] uppercase font-bold text-slate-400">Qui</div>
-              <div className="text-xs font-bold text-slate-400 mt-0.5">20</div>
-              <div className="w-1.5 h-1.5 rounded-full bg-transparent mt-1" />
-            </div>
-
-            {/* 3. Dia 21 (Sex - Hoje) - CENTRALIZADO */}
-            <button
-              type="button"
-              onClick={() => onSelectedDateChange('21/08')}
-              className={`py-2 px-1 rounded-2xl transition-all flex flex-col items-center justify-center ${
-                selectedDate === '21/08'
-                  ? 'bg-slate-900 text-white shadow-md shadow-slate-900/20 ring-2 ring-emerald-500 scale-[1.03]'
-                  : 'bg-white hover:bg-slate-50 border border-slate-200/80 text-slate-700 shadow-2xs'
-              }`}
-            >
-              <div
-                className={`text-[8px] uppercase font-black tracking-wider leading-none ${
-                  selectedDate === '21/08' ? 'text-pink-400' : 'text-slate-400'
-                }`}
-              >
-                Hoje
-              </div>
-              <div className="text-sm font-black mt-0.5 leading-none">21</div>
-              {/* Google Calendar style event dot */}
-              <div
-                className={`w-1.5 h-1.5 rounded-full mt-1.5 ${
-                  selectedDate === '21/08' ? 'bg-emerald-400' : 'bg-emerald-500'
-                }`}
-              />
-            </button>
-
-            {/* 4. Dia 22 (Sáb) - Ativo */}
-            <button
-              type="button"
-              onClick={() => onSelectedDateChange('22/08')}
-              className={`py-2 px-1 rounded-2xl transition-all flex flex-col items-center justify-center ${
-                selectedDate === '22/08'
-                  ? 'bg-slate-900 text-white shadow-md shadow-slate-900/20 ring-2 ring-indigo-500 scale-[1.03]'
-                  : 'bg-white hover:bg-slate-50 border border-slate-200/80 text-slate-700 shadow-2xs'
-              }`}
-            >
-              <div
-                className={`text-[8px] uppercase font-black tracking-wider leading-none ${
-                  selectedDate === '22/08' ? 'text-indigo-300' : 'text-slate-400'
-                }`}
-              >
-                Sáb
-              </div>
-              <div className="text-sm font-black mt-0.5 leading-none">22</div>
-              {/* Google Calendar style event dot */}
-              <div
-                className={`w-1.5 h-1.5 rounded-full mt-1.5 ${
-                  selectedDate === '22/08' ? 'bg-indigo-400' : 'bg-indigo-500'
-                }`}
-              />
-            </button>
-
-            {/* 5. Dia 23 (Dom) - Inativo */}
-            <div className="py-2 px-1 rounded-2xl bg-white/40 border border-slate-200/30 text-slate-300 flex flex-col items-center justify-center opacity-40 cursor-not-allowed">
-              <div className="text-[9px] uppercase font-bold text-slate-400">Dom</div>
-              <div className="text-xs font-bold text-slate-400 mt-0.5">23</div>
-              <div className="w-1.5 h-1.5 rounded-full bg-transparent mt-1" />
-            </div>
+              return (
+                <button
+                  key={weekItem.eventDate}
+                  type="button"
+                  onClick={() => isEnabled && onSelectedDateChange(weekItem.eventDate)}
+                  disabled={!isEnabled}
+                  className={`min-w-0 py-1.5 px-1 rounded-2xl transition-all flex flex-col items-center justify-center ${
+                    !isEnabled
+                      ? 'bg-white/60 border border-slate-200/60 text-slate-300 opacity-70 cursor-not-allowed'
+                      : isSelected
+                      ? `bg-slate-900 text-white shadow-md shadow-slate-900/20 ring-2 ${details.selectedRingClass} scale-[1.03]`
+                      : 'bg-white hover:bg-slate-50 border border-slate-200/80 text-slate-700 shadow-2xs'
+                  }`}
+                  title={
+                    isEnabled
+                      ? `${weekItem.fullWeekday}, ${weekItem.eventDate}`
+                      : `${weekItem.fullWeekday}, ${weekItem.eventDate} sem registros`
+                  }
+                >
+                  <div
+                    className={`text-[8px] uppercase font-black tracking-wide leading-none ${
+                      !isEnabled
+                        ? 'text-slate-300'
+                        : isSelected
+                        ? details.accentTextClass
+                        : 'text-slate-400'
+                    }`}
+                  >
+                    {weekItem.shortWeekday}
+                  </div>
+                  <div className="text-xs font-black mt-0.5 leading-none">{weekItem.dayNumber}</div>
+                  <div
+                    className={`w-1.5 h-1.5 rounded-full mt-1 ${
+                      !isEnabled
+                        ? 'bg-slate-200'
+                        : isSelected
+                        ? details.selectedDotClass
+                        : details.idleDotClass
+                    }`}
+                  />
+                  {weekItem.isToday && (
+                    <div className="text-[7px] font-black mt-1 leading-none text-emerald-500">Hoje</div>
+                  )}
+                </button>
+              );
+            })}
           </div>
         </div>
       </div>

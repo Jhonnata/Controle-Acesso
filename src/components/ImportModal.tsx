@@ -11,11 +11,18 @@ import {
 } from 'lucide-react';
 import { Attendee, ColumnMapping } from '../types';
 import { parsePastedOrCSVData } from '../services/storage';
+import * as XLSX from 'xlsx';
+import { isValidEventDate, normalizeEventDateInput } from '../services/eventDates';
 
 interface ImportModalProps {
   isOpen: boolean;
   onClose: () => void;
-  onImportAttendees: (attendees: Attendee[], headers: string[], mapping: ColumnMapping) => void;
+  onImportAttendees: (
+    attendees: Attendee[],
+    headers: string[],
+    mapping: ColumnMapping,
+    selectedDay: string
+  ) => void;
 }
 
 export const ImportModal: React.FC<ImportModalProps> = ({
@@ -28,6 +35,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
   const [detectedHeaders, setDetectedHeaders] = useState<string[]>([]);
   const [detectedMapping, setDetectedMapping] = useState<ColumnMapping | null>(null);
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [selectedDay, setSelectedDay] = useState('');
 
   if (!isOpen) return null;
 
@@ -58,6 +66,35 @@ export const ImportModal: React.FC<ImportModalProps> = ({
     const file = e.target.files?.[0];
     if (!file) return;
 
+    const isExcel = /\.(xlsx|xls)$/i.test(file.name);
+
+    if (isExcel) {
+      const reader = new FileReader();
+      reader.onload = (event) => {
+        try {
+          const data = new Uint8Array(event.target?.result as ArrayBuffer);
+          const workbook = XLSX.read(data, { type: 'array' });
+          const sheetName =
+            workbook.SheetNames.find((n) =>
+              /credenci|particip|convid|lista/i.test(n)
+            ) || workbook.SheetNames[0];
+          const tsv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName], {
+            FS: '\t',
+            blankrows: false,
+          });
+          setPasteText(tsv);
+          handleParse(tsv);
+        } catch (err: any) {
+          setErrorMsg(
+            err.message || 'Não foi possível ler a planilha Excel.'
+          );
+        }
+        e.target.value = '';
+      };
+      reader.readAsArrayBuffer(file);
+      return;
+    }
+
     const reader = new FileReader();
     reader.onload = (event) => {
       const content = event.target?.result as string;
@@ -65,15 +102,16 @@ export const ImportModal: React.FC<ImportModalProps> = ({
         setPasteText(content);
         handleParse(content);
       }
+      e.target.value = '';
     };
     reader.readAsText(file, 'UTF-8');
   };
 
   const handleConfirmImport = () => {
-    if (!previewAttendees || previewAttendees.length === 0 || !detectedMapping) {
+    if (!previewAttendees || previewAttendees.length === 0 || !detectedMapping || !isValidEventDate(selectedDay)) {
       return;
     }
-    onImportAttendees(previewAttendees, detectedHeaders, detectedMapping);
+    onImportAttendees(previewAttendees, detectedHeaders, detectedMapping, selectedDay);
     onClose();
   };
 
@@ -93,7 +131,7 @@ export const ImportModal: React.FC<ImportModalProps> = ({
             </div>
             <div>
               <h3 className="text-sm font-bold text-slate-100">Importar / Colar Células</h3>
-              <p className="text-[11px] text-slate-400">Cole células direto do Google Sheets ou envie um CSV</p>
+              <p className="text-[11px] text-slate-400">Envie um arquivo .XLSX / .CSV ou cole células do Sheets</p>
             </div>
           </div>
           <button
@@ -141,14 +179,33 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           <div className="flex items-center gap-2">
             <label className="flex-1 py-2 px-3 bg-slate-800 hover:bg-slate-750 text-slate-300 rounded-xl border border-slate-700 flex items-center justify-center gap-2 cursor-pointer transition-colors">
               <Upload className="w-3.5 h-3.5" />
-              <span>Ou Carregar Arquivo .CSV / .TXT</span>
+              <span>Ou Carregar Arquivo .XLSX / .CSV / .TXT</span>
               <input
                 type="file"
-                accept=".csv,.txt,.tsv"
+                accept=".xlsx,.xls,.csv,.txt,.tsv"
                 onChange={handleFileUpload}
                 className="hidden"
               />
             </label>
+          </div>
+
+          <div className="space-y-1.5">
+            <label className="font-semibold text-slate-300 flex items-center justify-between">
+              <span>Dia da importação *</span>
+              <span className="text-[10px] text-rose-400 font-normal">Obrigatório</span>
+            </label>
+            <input
+              type="text"
+              value={selectedDay}
+              onChange={(e) => setSelectedDay(normalizeEventDateInput(e.target.value))}
+              inputMode="numeric"
+              maxLength={5}
+              placeholder="dd/mm"
+              className="w-full px-3 py-2 bg-slate-950 border border-slate-700 rounded-xl text-slate-100 font-bold focus:outline-none focus:border-emerald-500"
+            />
+            <p className="text-[10px] text-slate-500">
+              O dia escolhido será aplicado a todos os registros desta importação.
+            </p>
           </div>
 
           {/* Error Message */}
@@ -168,6 +225,12 @@ export const ImportModal: React.FC<ImportModalProps> = ({
                   {previewAttendees.length} participantes detectados
                 </span>
               </div>
+
+              {selectedDay && (
+                <div className="text-[11px] font-bold text-emerald-300">
+                  Importação configurada para o dia {selectedDay}
+                </div>
+              )}
 
               <div className="grid grid-cols-2 gap-2 text-[11px]">
                 <div className="p-2 rounded-lg bg-slate-900 border border-slate-800 flex items-center gap-2">
@@ -213,11 +276,15 @@ export const ImportModal: React.FC<ImportModalProps> = ({
           </button>
           <button
             onClick={handleConfirmImport}
-            disabled={!previewAttendees || previewAttendees.length === 0}
+            disabled={!previewAttendees || previewAttendees.length === 0 || !isValidEventDate(selectedDay)}
             className="flex-1 py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all shadow-md"
           >
             <Check className="w-4 h-4" />
-            <span>Usar {previewAttendees?.length || 0} Participantes</span>
+            <span>
+              {selectedDay
+                ? `Importar ${previewAttendees?.length || 0} no dia ${selectedDay}`
+                : 'Escolha o dia para importar'}
+            </span>
           </button>
         </div>
       </div>
