@@ -48,6 +48,14 @@ export interface ColumnMapping {
   phoneIndex: number;
 }
 
+export interface ImportBatch {
+  attendees: Attendee[];
+  headers: string[];
+  mapping: ColumnMapping;
+  eventDate: string;
+  sheetName?: string;
+}
+
 export interface SheetTabInfo {
   sheetId: number;
   title: string;

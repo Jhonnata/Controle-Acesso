@@ -14,6 +14,7 @@ import { formatCurrentTimestamp, groupAttendeesByExhibitor } from './services/sh
 import {
   Attendee,
   FilterStatus,
+  ImportBatch,
   SortOption,
   UserRoleId,
 } from './types';
@@ -342,87 +343,82 @@ export default function App() {
   };
 
   // Import spreadsheet rows into Supabase (dedup by CPF + day)
-  const handleImportAttendees = async (
-    imported: Attendee[],
-    _headers: string[],
-    _mapping: any,
-    selectedImportDay: string
-  ) => {
-    const cleanDoc = (v?: string) => (v || '').replace(/\D/g, '');
-    const normalizedImportDay = normalizeEventDateInput(selectedImportDay);
-
-    if (!isValidEventDate(normalizedImportDay)) {
-      showToast('Dia de importação inválido. Use o formato dd/mm.', 'error');
+  const handleImportAttendees = async (batches: ImportBatch[]) => {
+    if (!batches.length) {
+      showToast('Nenhum lote válido para importar.', 'error');
       return;
     }
 
-    const existingCpfDayKeys = new Set<string>();
-    attendees.forEach((a) => {
-      const normalizedCpf = cleanDoc(a.document);
-      if (!normalizedCpf) return;
-      existingCpfDayKeys.add(`${normalizedCpf}|${normalizeEventDateInput(a.date || getDefaultEventDate())}`);
-    });
-
-    let newCount = 0;
+    let insertedCount = 0;
     let skippedCount = 0;
-    let skippedExistingCount = 0;
     let missingCpfCount = 0;
+    let failedCount = 0;
     const idSuffix = Date.now();
-    const listToSync: Attendee[] = [];
+    const importedPerDay = new Map<string, number>();
 
-    imported.forEach((row, idx) => {
-      const name = (row.name || '').trim();
-      if (!name) {
-        skippedCount++;
-        return;
-      }
-      const day = normalizedImportDay;
-      const doc = cleanDoc(row.document);
-      const key = doc ? `${doc}|${day}` : '';
-
-      if (!doc) {
-        missingCpfCount++;
+    for (const [batchIndex, batch] of batches.entries()) {
+      const day = normalizeEventDateInput(batch.eventDate);
+      if (!isValidEventDate(day)) {
+        skippedCount += batch.attendees.length;
+        continue;
       }
 
-      if (doc && existingCpfDayKeys.has(key)) {
-        skippedExistingCount++;
-        return;
+      for (const [idx, row] of batch.attendees.entries()) {
+        const name = (row.name || '').trim();
+        if (!name) {
+          skippedCount++;
+          continue;
+        }
+
+        const doc = String(row.document || '').replace(/\D/g, '');
+
+        if (!doc) {
+          missingCpfCount++;
+        }
+
+        const newAtt: Attendee = {
+          id: `att-${day.replace('/', '-')}-m-${idSuffix}-${batchIndex + 1}-${idx + 1}`,
+          rowIndex: 0,
+          date: day,
+          name,
+          exhibitor: row.exhibitor || 'Geral / Outros',
+          document: row.document || '',
+          role: row.role || 'Credenciado',
+          stand: row.stand || '',
+          isCheckedIn: Boolean(row.isCheckedIn),
+          checkedInAt: row.isCheckedIn ? formatCurrentTimestamp() : undefined,
+          checkedBy: row.isCheckedIn ? currentProfile.badge : undefined,
+          rawValues: [],
+        };
+
+        const res = await syncAllAttendeesToSupabase([newAtt]);
+        if (res.success) {
+          insertedCount++;
+          importedPerDay.set(day, (importedPerDay.get(day) || 0) + 1);
+        } else {
+          failedCount++;
+        }
       }
+    }
 
-      newCount++;
-      const newAtt: Attendee = {
-        id: `att-${day.replace('/', '-')}-m-${idSuffix}-${idx + 1}`,
-        rowIndex: 0,
-        date: day,
-        name,
-        exhibitor: row.exhibitor || 'Geral / Outros',
-        document: row.document || '',
-        role: row.role || 'Credenciado',
-        stand: row.stand || '',
-        isCheckedIn: Boolean(row.isCheckedIn),
-        checkedInAt: row.isCheckedIn ? formatCurrentTimestamp() : undefined,
-        checkedBy: row.isCheckedIn ? currentProfile.badge : undefined,
-        rawValues: [],
-      };
-      listToSync.push(newAtt);
-      if (doc) existingCpfDayKeys.add(key);
-    });
-
-    if (listToSync.length === 0) {
+    if (insertedCount === 0) {
+      const attemptedDays = Array.from(
+        new Set(batches.map((batch) => normalizeEventDateInput(batch.eventDate)).filter(Boolean))
+      );
       showToast(
-        `Nenhuma nova linha para importar em ${normalizedImportDay} (${skippedExistingCount} CPFs já existentes${skippedCount ? ` • ${skippedCount} inválidas` : ''}).`,
+        `Nenhuma nova linha importada${attemptedDays.length ? ` em ${attemptedDays.join(', ')}` : ''}${failedCount ? ` • ${failedCount} conflitos/falhas` : ''}${skippedCount ? ` • ${skippedCount} inválidas` : ''}.`,
         'info'
       );
       return;
     }
-
-    const res = await syncAllAttendeesToSupabase(listToSync);
-    if (!res.success && res.error) {
-      showToast(`Erro ao importar: ${res.error}`, 'error');
-      return;
-    }
+    const importedDaysSummary = Array.from(importedPerDay.entries())
+      .sort((a, b) => a[0].localeCompare(b[0], 'pt-BR'))
+      .map(([day, count]) => `${day}: ${count}`)
+      .join(' • ');
     showToast(
-      `Planilha importada em ${normalizedImportDay}: ${newCount} inseridos • ${skippedExistingCount} já existentes no dia${
+      `Planilha importada${importedDaysSummary ? ` (${importedDaysSummary})` : ''}: ${insertedCount} inseridos${
+        failedCount ? ` • ${failedCount} conflitos/falhas` : ''
+      }${
         skippedCount ? ` • ${skippedCount} inválidas` : ''
       }${missingCpfCount ? ` • ${missingCpfCount} sem CPF` : ''}`,
       'success'

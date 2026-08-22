@@ -162,8 +162,17 @@ export function parsePastedOrCSVData(rawText: string): {
     }
   });
 
-  if (exhibitorIndex === -1) exhibitorIndex = 0;
-  if (nameIndex === -1) nameIndex = exhibitorIndex === 0 && headers.length > 1 ? 1 : 0;
+  if (!hasHeaders && headers.length >= 4) {
+    exhibitorIndex = 0;
+    standIndex = 1;
+    nameIndex = 2;
+    docIndex = 3;
+    statusIndex = -1;
+    timeIndex = -1;
+  } else {
+    if (exhibitorIndex === -1) exhibitorIndex = 0;
+    if (nameIndex === -1) nameIndex = exhibitorIndex === 0 && headers.length > 1 ? 1 : 0;
+  }
 
   const mapping: ColumnMapping = {
     exhibitorIndex,
@@ -178,17 +187,22 @@ export function parsePastedOrCSVData(rawText: string): {
   };
 
   const attendees: Attendee[] = [];
+  let lastExhibitor = '';
 
   dataRows.forEach((row, index) => {
     if (row.length === 0 || row.every((c) => !c.trim())) return;
 
-    const exhibitor = (row[exhibitorIndex] || 'Geral / Outros').trim();
-    const name = (row[nameIndex] || `Participante ${index + 1}`).trim();
+    const exhibitorCell = (row[exhibitorIndex] || '').trim();
+    const exhibitor = exhibitorCell || lastExhibitor || 'Geral / Outros';
+    const name = (row[nameIndex] || '').trim();
     const doc = docIndex >= 0 ? (row[docIndex] || '').trim() : undefined;
     const role = roleIndex >= 0 ? (row[roleIndex] || '').trim() : undefined;
     const stand = standIndex >= 0 ? (row[standIndex] || '').trim() : undefined;
     const rawStatus = statusIndex >= 0 ? (row[statusIndex] || '').trim().toLowerCase() : '';
     const rawTime = timeIndex >= 0 ? (row[timeIndex] || '').trim() : undefined;
+
+    if (!name) return;
+    if (exhibitorCell) lastExhibitor = exhibitorCell;
 
     const isCheckedIn =
       rawStatus === 'sim' ||

@@ -17,13 +17,15 @@ import {
   BarChart3,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { Attendee, ColumnMapping } from '../types';
+import { Attendee, ImportBatch } from '../types';
 import {
   generateEnteredByExhibitorCSV,
   generateExhibitorSummaryCSV,
   parsePastedOrCSVData,
 } from '../services/storage';
 import {
+  compareEventDates,
+  getDefaultEventDate,
   isValidEventDate,
   normalizeEventDateInput,
   sortEventDates,
@@ -36,10 +38,7 @@ interface SettingsModalProps {
   checkedInCount: number;
   attendees: Attendee[];
   onImportAttendees: (
-    attendees: Attendee[],
-    headers: string[],
-    mapping: ColumnMapping,
-    selectedDay: string
+    batches: ImportBatch[]
   ) => void;
 }
 
@@ -52,6 +51,38 @@ interface CompanySummaryItem {
 interface CompanyEnteredGroup {
   name: string;
   attendees: Attendee[];
+}
+
+interface ExcelImportSummary {
+  importedSheets: Array<{ sheetName: string; eventDate: string; count: number }>;
+  ignoredSheets: string[];
+  source: 'manual' | 'excel-auto';
+}
+
+type PreviewMatchStatus = 'new' | 'existing_same_day' | 'missing_cpf' | 'duplicate_in_file';
+
+interface PreviewImportItem {
+  id: string;
+  attendee: Attendee;
+  eventDate: string;
+  sheetName: string;
+  exhibitor: string;
+  normalizedCpf: string;
+  matchStatus: PreviewMatchStatus;
+  isSelected: boolean;
+}
+
+interface PreviewCompanyGroup {
+  name: string;
+  items: PreviewImportItem[];
+}
+
+interface PreviewImportBatch {
+  sheetName: string;
+  eventDate: string;
+  timingLabel: 'past' | 'today' | 'future';
+  companies: PreviewCompanyGroup[];
+  counts: Record<PreviewMatchStatus, number>;
 }
 
 export const SettingsModal: React.FC<SettingsModalProps> = ({
@@ -68,11 +99,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [copiedEntered, setCopiedEntered] = useState(false);
 
   const [pasteText, setPasteText] = useState('');
-  const [previewAttendees, setPreviewAttendees] = useState<Attendee[] | null>(null);
-  const [detectedHeaders, setDetectedHeaders] = useState<string[]>([]);
-  const [detectedMapping, setDetectedMapping] = useState<ColumnMapping | null>(null);
+  const [previewBatches, setPreviewBatches] = useState<PreviewImportBatch[]>([]);
   const [importError, setImportError] = useState<string | null>(null);
   const [selectedImportDay, setSelectedImportDay] = useState('');
+  const [excelImportSummary, setExcelImportSummary] = useState<ExcelImportSummary | null>(null);
+  const [selectedPreviewBatchKey, setSelectedPreviewBatchKey] = useState<string | null>(null);
 
   const availableDates = useMemo(
     () => sortEventDates(attendees.map((attendee) => attendee.date || '').filter(Boolean)),
@@ -150,6 +181,128 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     count: checkedInAttendees.filter((attendee) => getCheckInHour(attendee.checkedInAt) === hour).length,
   }));
   const maxHourlyCount = Math.max(1, ...hourlyCounts.map((bucket) => bucket.count));
+
+  const existingCpfDayKeys = useMemo(() => {
+    const cleanDoc = (value?: string) => (value || '').replace(/\D/g, '');
+    return new Set(
+      attendees
+        .map((attendee) => {
+          const cpf = cleanDoc(attendee.document);
+          const day = normalizeEventDateInput(attendee.date || '');
+          if (!cpf || !isValidEventDate(day)) return null;
+          return `${cpf}|${day}`;
+        })
+        .filter(Boolean) as string[]
+    );
+  }, [attendees]);
+
+  const buildPreviewBatches = (rawBatches: ImportBatch[]): PreviewImportBatch[] => {
+    const seenKeys = new Set<string>();
+    const today = getDefaultEventDate();
+
+    return rawBatches.map((batch, batchIndex) => {
+      const eventDate = normalizeEventDateInput(batch.eventDate);
+      const safeEventDate = isValidEventDate(eventDate) ? eventDate : getDefaultEventDate();
+      const timingLabel: 'past' | 'today' | 'future' =
+        compareEventDates(safeEventDate, today) < 0
+          ? 'past'
+          : compareEventDates(safeEventDate, today) > 0
+          ? 'future'
+          : 'today';
+
+      const items = batch.attendees.map((attendee, attendeeIndex) => {
+        const normalizedCpf = String(attendee.document || '').replace(/\D/g, '');
+        const key = normalizedCpf ? `${normalizedCpf}|${safeEventDate}` : '';
+
+        let matchStatus: PreviewMatchStatus = 'new';
+        if (!normalizedCpf) {
+          matchStatus = 'missing_cpf';
+        } else if (seenKeys.has(key)) {
+          matchStatus = 'duplicate_in_file';
+        } else if (existingCpfDayKeys.has(key)) {
+          matchStatus = 'existing_same_day';
+        }
+
+        if (normalizedCpf) seenKeys.add(key);
+
+        return {
+          id: `${batchIndex}-${attendeeIndex}-${safeEventDate}-${normalizedCpf || 'sem-cpf'}-${attendee.name}`,
+          attendee: { ...attendee, date: safeEventDate },
+          eventDate: safeEventDate,
+          sheetName: batch.sheetName || 'Importação manual',
+          exhibitor: attendee.exhibitor || 'Geral / Outros',
+          normalizedCpf,
+          matchStatus,
+          isSelected: matchStatus === 'new' || matchStatus === 'missing_cpf',
+        } satisfies PreviewImportItem;
+      });
+
+      const companiesMap = items.reduce<Record<string, PreviewCompanyGroup>>((acc, item) => {
+        const exhibitor = item.exhibitor || 'Geral / Outros';
+        if (!acc[exhibitor]) acc[exhibitor] = { name: exhibitor, items: [] };
+        acc[exhibitor].items.push(item);
+        return acc;
+      }, {});
+
+      const counts = items.reduce<Record<PreviewMatchStatus, number>>(
+        (acc, item) => {
+          acc[item.matchStatus] += 1;
+          return acc;
+        },
+        { new: 0, existing_same_day: 0, missing_cpf: 0, duplicate_in_file: 0 }
+      );
+
+      return {
+        sheetName: batch.sheetName || 'Importação manual',
+        eventDate: safeEventDate,
+        timingLabel,
+        companies: Object.values(companiesMap).sort((a, b) => a.name.localeCompare(b.name, 'pt-BR')),
+        counts,
+      };
+    });
+  };
+
+  const selectedPreviewItems = useMemo(
+    () =>
+      previewBatches.flatMap((batch) =>
+        batch.companies.flatMap((company) => company.items.filter((item) => item.isSelected))
+      ),
+    [previewBatches]
+  );
+
+  const selectedPreviewBatch = useMemo(() => {
+    if (!previewBatches.length) return null;
+    if (!selectedPreviewBatchKey) return previewBatches[0];
+    return (
+      previewBatches.find(
+        (batch) => `${batch.sheetName}-${batch.eventDate}` === selectedPreviewBatchKey
+      ) || previewBatches[0]
+    );
+  }, [previewBatches, selectedPreviewBatchKey]);
+
+  const selectedBatchPreviewItems = useMemo(
+    () =>
+      selectedPreviewBatch?.companies.flatMap((company) =>
+        company.items.filter((item) => item.isSelected)
+      ) || [],
+    [selectedPreviewBatch]
+  );
+
+  const previewTotals = useMemo(
+    () =>
+      previewBatches.reduce(
+        (acc, batch) => {
+          acc.total += batch.counts.new + batch.counts.existing_same_day + batch.counts.missing_cpf + batch.counts.duplicate_in_file;
+          acc.new += batch.counts.new;
+          acc.existing += batch.counts.existing_same_day;
+          acc.missingCpf += batch.counts.missing_cpf;
+          acc.duplicateInFile += batch.counts.duplicate_in_file;
+          return acc;
+        },
+        { total: 0, new: 0, existing: 0, missingCpf: 0, duplicateInFile: 0 }
+      ),
+    [previewBatches]
+  );
 
   if (!isOpen) return null;
 
@@ -299,9 +452,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const handleParseImport = (text: string) => {
     setImportError(null);
     if (!text.trim()) {
-      setPreviewAttendees(null);
-      setDetectedHeaders([]);
-      setDetectedMapping(null);
+      setPreviewBatches([]);
+      setExcelImportSummary(null);
       return;
     }
 
@@ -309,15 +461,35 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
       const result = parsePastedOrCSVData(text);
       if (result.attendees.length === 0) {
         setImportError('Nenhuma linha válida encontrada no texto.');
-        setPreviewAttendees(null);
+        setPreviewBatches([]);
+        setSelectedPreviewBatchKey(null);
         return;
       }
-      setPreviewAttendees(result.attendees);
-      setDetectedHeaders(result.headers);
-      setDetectedMapping(result.mapping);
+      const nextPreviewBatches = buildPreviewBatches([
+        {
+          attendees: result.attendees,
+          headers: result.headers,
+          mapping: result.mapping,
+          eventDate: normalizeEventDateInput(selectedImportDay),
+          sheetName: 'Importação manual',
+        },
+      ]);
+      setPreviewBatches(nextPreviewBatches);
+      setSelectedPreviewBatchKey(
+        nextPreviewBatches[0]
+          ? `${nextPreviewBatches[0].sheetName}-${nextPreviewBatches[0].eventDate}`
+          : null
+      );
+      setExcelImportSummary({
+        importedSheets: [],
+        ignoredSheets: [],
+        source: 'manual',
+      });
     } catch (err: any) {
       setImportError(err.message || 'Erro ao processar os dados.');
-      setPreviewAttendees(null);
+      setPreviewBatches([]);
+      setSelectedPreviewBatchKey(null);
+      setExcelImportSummary(null);
     }
   };
 
@@ -332,18 +504,71 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         try {
           const data = new Uint8Array(event.target?.result as ArrayBuffer);
           const workbook = XLSX.read(data, { type: 'array' });
-          const sheetName =
-            workbook.SheetNames.find((n) => /credenci|particip|convid|lista/i.test(n)) ||
-            workbook.SheetNames[0];
-          const tsv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName], {
-            FS: '\t',
-            blankrows: false,
+          const importedSheets: Array<{ sheetName: string; eventDate: string; count: number }> = [];
+          const ignoredSheets: string[] = [];
+          const nextBatches: ImportBatch[] = [];
+
+            workbook.SheetNames.forEach((sheetName) => {
+              const eventDateMatch = sheetName.match(/(?:^|[^\d])(\d{2}\/\d{2}|\d{4})(?:[^\d]|$)/);
+              const eventDate = eventDateMatch ? normalizeEventDateInput(eventDateMatch[1]) : '';
+
+            if (!isValidEventDate(eventDate)) {
+              ignoredSheets.push(sheetName);
+              return;
+            }
+
+            const tsv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName], {
+              FS: '\t',
+              blankrows: false,
+            });
+            const result = parsePastedOrCSVData(tsv);
+
+            if (!result.attendees.length) {
+              ignoredSheets.push(sheetName);
+              return;
+            }
+
+            nextBatches.push({
+              attendees: result.attendees,
+              headers: result.headers,
+              mapping: result.mapping,
+              eventDate,
+              sheetName,
+            });
+            importedSheets.push({
+              sheetName,
+              eventDate,
+              count: result.attendees.length,
+            });
           });
-          setPasteText(tsv);
-          handleParseImport(tsv);
-        } catch (err: any) {
-          setImportError(err.message || 'Não foi possível ler a planilha Excel.');
-        }
+
+            if (!nextBatches.length) {
+              setImportError('Nenhuma aba com data no formato dd/mm ou ddmm foi encontrada para importar.');
+              setPreviewBatches([]);
+              setSelectedPreviewBatchKey(null);
+              setExcelImportSummary(null);
+              return;
+            }
+
+            setPasteText('');
+            const nextPreviewBatches = buildPreviewBatches(nextBatches);
+            setPreviewBatches(nextPreviewBatches);
+            setSelectedPreviewBatchKey(
+              nextPreviewBatches[0]
+                ? `${nextPreviewBatches[0].sheetName}-${nextPreviewBatches[0].eventDate}`
+                : null
+            );
+            setExcelImportSummary({
+              importedSheets,
+              ignoredSheets,
+              source: 'excel-auto',
+            });
+          } catch (err: any) {
+            setImportError(err.message || 'Não foi possível ler a planilha Excel.');
+            setPreviewBatches([]);
+            setSelectedPreviewBatchKey(null);
+            setExcelImportSummary(null);
+          }
         e.target.value = '';
       };
       reader.readAsArrayBuffer(file);
@@ -363,16 +588,46 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   };
 
   const handleConfirmImport = () => {
-    if (!previewAttendees || !previewAttendees.length || !detectedMapping || !isValidEventDate(selectedImportDay)) {
+    if (!selectedPreviewBatch || !selectedBatchPreviewItems.length) {
       return;
     }
-    onImportAttendees(previewAttendees, detectedHeaders, detectedMapping, selectedImportDay);
+    onImportAttendees([
+      {
+        attendees: selectedPreviewBatch.companies.flatMap((company) =>
+          company.items.filter((item) => item.isSelected).map((item) => item.attendee)
+        ),
+        headers: [],
+        mapping: {
+          exhibitorIndex: -1,
+          nameIndex: -1,
+          statusIndex: -1,
+          timestampIndex: -1,
+          documentIndex: -1,
+          roleIndex: -1,
+          standIndex: -1,
+          emailIndex: -1,
+          phoneIndex: -1,
+        },
+        eventDate: selectedPreviewBatch.eventDate,
+        sheetName: selectedPreviewBatch.sheetName,
+      },
+    ]);
     onClose();
   };
 
-  const exhibitorCount = previewAttendees
-    ? new Set(previewAttendees.map((attendee) => attendee.exhibitor)).size
-    : 0;
+  const togglePreviewItem = (targetId: string) => {
+    setPreviewBatches((current) =>
+      current.map((batch) => ({
+        ...batch,
+        companies: batch.companies.map((company) => ({
+          ...company,
+          items: company.items.map((item) =>
+            item.id === targetId ? { ...item, isSelected: !item.isSelected } : item
+          ),
+        })),
+      }))
+    );
+  };
 
   return (
     <div className="fixed inset-0 z-50 bg-slate-950/40 backdrop-blur-sm flex items-end sm:items-center justify-center p-0 sm:p-4 animate-in fade-in duration-200">
@@ -657,14 +912,14 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           {activeTab === 'import' && (
             <div className="space-y-4">
               <div className="p-3 rounded-xl bg-slate-50 border border-slate-200 text-[11px] text-slate-600">
-                Escolha o dia, envie `.xlsx` ou `.csv` e importe apenas novos registros. CPF igual no mesmo dia, com ou sem pontuação, será ignorado e não atualizado.
+                Revise por aba e por empresa antes de importar. CPF igual no mesmo dia, com ou sem pontuação, aparece como conflito; registros sem CPF ficam separados com alerta.
               </div>
 
               <div className="space-y-1.5">
                 <label className="font-semibold text-slate-700 flex items-center justify-between">
-                  <span>Dia da importação *</span>
-                  <span className="text-[10px] text-rose-500 font-normal">Obrigatório</span>
-                </label>
+                    <span>Dia da importação</span>
+                    <span className="text-[10px] text-slate-500 font-normal">CSV / texto</span>
+                  </label>
                 <input
                   type="text"
                   value={selectedImportDay}
@@ -675,7 +930,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   className="w-full px-3 py-2 bg-white border border-slate-200 rounded-xl text-slate-900 font-bold focus:outline-none focus:border-emerald-500"
                 />
                 <div className="text-[10px] text-slate-500">
-                  Exemplo: `22/08`, `23/08` ou `28/08`. A data é obrigatória.
+                  Exemplo: `22/08`, `23/08`, `28/08` ou abas Excel como `2308`. Em Excel com abas datadas, o dia vem do nome da aba.
                 </div>
               </div>
 
@@ -714,40 +969,167 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </div>
               )}
 
-              {previewAttendees && previewAttendees.length > 0 && (
+              {previewBatches.length > 0 && (
                 <div className="p-4 rounded-2xl bg-slate-50 border border-emerald-200 space-y-3">
                   <div className="flex items-center justify-between">
                     <div className="font-black text-slate-900">Prévia da importação</div>
                     <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-[10px] font-black">
-                      {previewAttendees.length} pessoas
+                      {previewTotals.total} pessoas
                     </span>
                   </div>
-                  <div className="grid grid-cols-2 gap-2 text-[11px]">
+                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-[11px]">
                     <div className="p-2 rounded-lg bg-white border border-slate-200 flex items-center gap-2">
                       <Users className="w-3.5 h-3.5 text-emerald-600" />
-                      <span>{previewAttendees.length} participantes</span>
+                      <span>{previewTotals.new} não encontrados</span>
                     </div>
                     <div className="p-2 rounded-lg bg-white border border-slate-200 flex items-center gap-2">
                       <Building className="w-3.5 h-3.5 text-indigo-600" />
-                      <span>{exhibitorCount} empresas</span>
+                      <span>{previewTotals.existing} encontrados</span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-white border border-slate-200 flex items-center gap-2">
+                      <AlertCircle className="w-3.5 h-3.5 text-amber-600" />
+                      <span>{previewTotals.missingCpf} sem CPF</span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-white border border-slate-200 flex items-center gap-2">
+                      <Copy className="w-3.5 h-3.5 text-rose-600" />
+                      <span>{previewTotals.duplicateInFile} duplicados no arquivo</span>
                     </div>
                   </div>
                   <div className="text-[11px] font-bold text-emerald-700">
-                    {isValidEventDate(selectedImportDay)
+                    {excelImportSummary?.source === 'excel-auto'
+                      ? 'As datas serão definidas automaticamente pelo nome de cada aba.'
+                      : isValidEventDate(selectedImportDay)
                       ? `Todos os registros serão importados no dia ${selectedImportDay}.`
                       : 'Escolha um dia antes de confirmar a importação.'}
                   </div>
-                  <div className="space-y-1 max-h-32 overflow-y-auto">
-                    {previewAttendees.slice(0, 5).map((attendee, index) => (
-                      <div
-                        key={`${attendee.id}-${index}`}
-                        className="p-2 rounded-lg bg-white border border-slate-200 flex items-center justify-between gap-2 text-[10px]"
-                      >
-                        <span className="font-semibold text-slate-900 truncate max-w-[140px]">{attendee.name}</span>
-                        <span className="text-slate-500 truncate max-w-[120px]">{attendee.exhibitor}</span>
-                        <span className="text-slate-500">{attendee.document || 'Sem CPF'}</span>
+                  {excelImportSummary?.source === 'excel-auto' && (
+                    <div className="space-y-2 text-[10px]">
+                      <div className="font-black text-slate-800">Abas detectadas</div>
+                      <div className="flex flex-wrap gap-2">
+                        {excelImportSummary.importedSheets.map((sheet) => (
+                          <button
+                            key={`${sheet.sheetName}-${sheet.eventDate}`}
+                            type="button"
+                            onClick={() => setSelectedPreviewBatchKey(`${sheet.sheetName}-${sheet.eventDate}`)}
+                            className={`px-3 py-2 rounded-xl border text-left transition-colors ${
+                              selectedPreviewBatchKey === `${sheet.sheetName}-${sheet.eventDate}`
+                                ? 'bg-emerald-600 border-emerald-600 text-white'
+                                : 'bg-white border-slate-200 text-slate-900 hover:border-emerald-300'
+                            }`}
+                          >
+                            <div className="font-semibold truncate max-w-[180px]">{sheet.sheetName}</div>
+                            <div
+                              className={`text-[10px] font-black ${
+                                selectedPreviewBatchKey === `${sheet.sheetName}-${sheet.eventDate}`
+                                  ? 'text-emerald-50'
+                                  : 'text-emerald-700'
+                              }`}
+                            >
+                              {sheet.eventDate} • {sheet.count} registros
+                            </div>
+                          </button>
+                        ))}
                       </div>
-                    ))}
+                      {excelImportSummary.ignoredSheets.length > 0 && (
+                        <div className="text-amber-700">
+                          Abas ignoradas por não conterem data `dd/mm` ou `ddmm`: {excelImportSummary.ignoredSheets.join(', ')}.
+                        </div>
+                      )}
+                    </div>
+                  )}
+                  <div className="space-y-3 max-h-[420px] overflow-y-auto pr-1">
+                    {selectedPreviewBatch && (
+                      <div
+                        key={`${selectedPreviewBatch.sheetName}-${selectedPreviewBatch.eventDate}`}
+                        className="p-3 rounded-xl bg-white border border-slate-200 space-y-3"
+                      >
+                        <div className="flex items-center justify-between gap-2">
+                          <div>
+                            <div className="font-black text-slate-900">{selectedPreviewBatch.sheetName}</div>
+                            <div className="text-[10px] text-slate-500">
+                              Dia {selectedPreviewBatch.eventDate} •{' '}
+                              {selectedPreviewBatch.timingLabel === 'past'
+                                ? 'Passado'
+                                : selectedPreviewBatch.timingLabel === 'today'
+                                ? 'Hoje'
+                                : 'Futuro'}
+                            </div>
+                          </div>
+                          <div className="text-[10px] font-black text-slate-600">
+                            {selectedPreviewBatch.counts.new} novos •{' '}
+                            {selectedPreviewBatch.counts.existing_same_day} conflitos
+                          </div>
+                        </div>
+
+                        {selectedPreviewBatch.companies.map((company) => (
+                          <div
+                            key={`${selectedPreviewBatch.sheetName}-${company.name}`}
+                            className="space-y-2 border-t border-slate-100 pt-2"
+                          >
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="font-bold text-slate-900">{company.name}</div>
+                              <div className="text-[10px] text-slate-500">{company.items.length} registros</div>
+                            </div>
+
+                            {(['new', 'existing_same_day', 'missing_cpf', 'duplicate_in_file'] as PreviewMatchStatus[]).map((status) => {
+                              const items = company.items.filter((item) => item.matchStatus === status);
+                              if (!items.length) return null;
+
+                              const statusLabel =
+                                status === 'new'
+                                  ? 'Não encontrados'
+                                  : status === 'existing_same_day'
+                                  ? 'Encontrados no sistema'
+                                  : status === 'missing_cpf'
+                                  ? 'Sem CPF'
+                                  : 'Duplicados no arquivo';
+
+                              return (
+                                <div key={`${company.name}-${status}`} className="space-y-1">
+                                  <div className="text-[10px] font-black text-slate-700">{statusLabel}</div>
+                                  <div className="space-y-1">
+                                    {items.map((item) => (
+                                      <label
+                                        key={item.id}
+                                        className={`flex items-start gap-2 p-2 rounded-lg border text-[10px] ${
+                                          item.matchStatus === 'new'
+                                            ? 'bg-emerald-50 border-emerald-200'
+                                            : item.matchStatus === 'missing_cpf'
+                                            ? 'bg-amber-50 border-amber-200'
+                                            : 'bg-rose-50 border-rose-200'
+                                        }`}
+                                      >
+                                        <input
+                                          type="checkbox"
+                                          checked={item.isSelected}
+                                          onChange={() => togglePreviewItem(item.id)}
+                                          className="mt-0.5"
+                                        />
+                                        <div className="min-w-0 flex-1">
+                                          <div className="font-semibold text-slate-900">{item.attendee.name}</div>
+                                          <div className="text-slate-500">
+                                            {item.attendee.document || 'Sem CPF'} {item.normalizedCpf ? `• CPF ${item.normalizedCpf}` : ''} • {item.eventDate}
+                                          </div>
+                                          {item.matchStatus === 'existing_same_day' && (
+                                            <div className="text-rose-700">Já existe no sistema para o mesmo dia.</div>
+                                          )}
+                                          {item.matchStatus === 'missing_cpf' && (
+                                            <div className="text-amber-700">Sem CPF: pode gerar duplicidade.</div>
+                                          )}
+                                          {item.matchStatus === 'duplicate_in_file' && (
+                                            <div className="text-rose-700">Duplicado dentro do próprio arquivo.</div>
+                                          )}
+                                        </div>
+                                      </label>
+                                    ))}
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ))}
+                      </div>
+                    )}
                   </div>
                 </div>
               )}
@@ -756,11 +1138,11 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 <button
                   onClick={() => {
                     setPasteText('');
-                    setPreviewAttendees(null);
-                    setDetectedHeaders([]);
-                    setDetectedMapping(null);
+                    setPreviewBatches([]);
                     setImportError(null);
                     setSelectedImportDay('');
+                    setExcelImportSummary(null);
+                    setSelectedPreviewBatchKey(null);
                   }}
                   className="flex-1 py-2.5 px-4 bg-slate-100 hover:bg-slate-200 text-slate-700 font-semibold rounded-xl text-xs transition-colors"
                 >
@@ -768,11 +1150,18 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                 </button>
                 <button
                   onClick={handleConfirmImport}
-                  disabled={!previewAttendees || previewAttendees.length === 0 || !detectedMapping || !isValidEventDate(selectedImportDay)}
+                  disabled={
+                    selectedBatchPreviewItems.length === 0 ||
+                    (excelImportSummary?.source !== 'excel-auto' && !isValidEventDate(selectedImportDay))
+                  }
                   className="flex-1 py-2.5 px-4 bg-emerald-500 hover:bg-emerald-400 disabled:opacity-40 disabled:cursor-not-allowed text-slate-950 font-bold rounded-xl text-xs flex items-center justify-center gap-1.5 transition-all shadow-md"
                 >
                   <Check className="w-4 h-4" />
-                  <span>Importar registros</span>
+                  <span>
+                    {selectedPreviewBatch
+                      ? `Importar aba ${selectedPreviewBatch.sheetName} (${selectedBatchPreviewItems.length})`
+                      : `Importar selecionados (${selectedBatchPreviewItems.length})`}
+                  </span>
                 </button>
               </div>
             </div>
