@@ -71,16 +71,14 @@ export function parsePastedOrCSVData(rawText: string): {
     throw new Error('Nenhum dado encontrado no texto colado.');
   }
 
-  // Detect delimiter: tab (\t), semicolon (;), or comma (,)
-  const firstLine = lines[0];
-  let delimiter = '\t';
-  if (firstLine.includes('\t')) {
-    delimiter = '\t';
-  } else if (firstLine.split(';').length > firstLine.split(',').length) {
-    delimiter = ';';
-  } else {
-    delimiter = ',';
-  }
+  // Detect delimiter sampling multiple lines (the first line can be a title
+  // without any delimiter, ex.: "23/08 - DOMINGO")
+  const sampleLines = lines.slice(0, Math.min(lines.length, 20));
+  const scoreDelimiter = (d: string) =>
+    sampleLines.reduce((acc, line) => acc + line.split(d).length, 0);
+  const delimiter = ['\t', ';', ','].reduce((a, b) =>
+    scoreDelimiter(b) > scoreDelimiter(a) ? b : a
+  );
 
   // Parse lines with quoted string handling
   const parseLine = (line: string): string[] => {
@@ -113,17 +111,32 @@ export function parsePastedOrCSVData(rawText: string): {
     throw new Error('Não foi possível processar as linhas.');
   }
 
-  const rawHeaders = parsedRows[0];
-  const hasHeaders = rawHeaders.some((h) =>
-    /(expositor|empresa|nome|cpf|participante|cargo|estande|status|check)/i.test(h)
-  );
+  // Procura a linha de cabeçalho real: pode vir depois de linhas de título
+  // (ex.: "23/08 - DOMINGO" na linha 1 e "EXPOSITOR | NOME | CPF" na linha 2)
+  const HEADER_HINT_RE =
+    /(expositor|empresa|nome|cpf|cnpj|documento|participante|convidado|cargo|funcao|função|estande|stand|status|check|presenca|presença|marca|razao|matricula|matrícula|email|e-mail|telefone)/i;
+  let headerLineIdx = 0;
+  for (let i = 0; i < Math.min(parsedRows.length, 20); i++) {
+    const hits = parsedRows[i].filter((c) => HEADER_HINT_RE.test(c)).length;
+    if (hits >= 2) {
+      headerLineIdx = i;
+      break;
+    }
+  }
+
+  const rawHeaders = parsedRows[headerLineIdx];
+  const hasHeaders =
+    headerLineIdx > 0 ||
+    rawHeaders.some((h) =>
+      /(expositor|empresa|nome|cpf|participante|cargo|estande|status|check)/i.test(h)
+    );
 
   let headers: string[] = [];
   let dataRows: string[][] = [];
 
   if (hasHeaders) {
     headers = rawHeaders;
-    dataRows = parsedRows.slice(1);
+    dataRows = parsedRows.slice(headerLineIdx + 1);
   } else {
     headers = rawHeaders.map((_, idx) => `Coluna ${idx + 1}`);
     dataRows = parsedRows;
