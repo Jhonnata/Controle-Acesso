@@ -110,6 +110,82 @@ export function reinitializeSupabaseClient(): SupabaseClient {
   return supabase;
 }
 
+// ============================================================
+// CONFIGURAÇÃO COMPARTILHADA (tabela public.app_config)
+// Guarda, por exemplo, o link do Google Sheets usado na
+// sincronização, para ninguém precisar redigitar.
+// ============================================================
+const APP_CONFIG_KEY_SHEET_URL = 'google_sheet_url';
+
+export interface SheetSyncConfig {
+  sheetUrl: string;
+  updatedBy?: string;
+  updatedAt?: string;
+}
+
+function isMissingRelationError(message: string): boolean {
+  return /does not exist|relation .* was not found|schema cache/i.test(message);
+}
+
+export async function fetchSheetConfigFromSupabase(): Promise<SheetSyncConfig | null> {
+  try {
+    const { data, error } = await supabase
+      .from('app_config')
+      .select('value, updated_by, updated_at')
+      .eq('key', APP_CONFIG_KEY_SHEET_URL)
+      .maybeSingle();
+
+    if (error) {
+      console.warn(
+        `[app_config] Leitura indisponível${isMissingRelationError(error.message) ? ' (tabela app_config ainda não criada)' : ''}:`,
+        error.message
+      );
+      return null;
+    }
+    if (!data || !data.value) return null;
+
+    return {
+      sheetUrl: String(data.value),
+      updatedBy: data.updated_by || undefined,
+      updatedAt: data.updated_at || undefined,
+    };
+  } catch (err: any) {
+    console.warn('[app_config] Falha ao ler configuração:', err?.message);
+    return null;
+  }
+}
+
+export async function saveSheetConfigToSupabase(
+  sheetUrl: string,
+  updatedBy?: string
+): Promise<{ ok: boolean; message?: string }> {
+  try {
+    const { error } = await supabase.from('app_config').upsert(
+      {
+        key: APP_CONFIG_KEY_SHEET_URL,
+        value: sheetUrl.trim(),
+        updated_by: updatedBy?.trim() || null,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'key' }
+    );
+
+    if (error) {
+      console.error('[app_config] Falha ao salvar:', error.message);
+      return {
+        ok: false,
+        message: isMissingRelationError(error.message)
+          ? 'Tabela app_config não existe ainda. Rode o SQL da aba "Criar Tabela".'
+          : error.message,
+      };
+    }
+    return { ok: true };
+  } catch (err: any) {
+    console.error('[app_config] Exceção ao salvar:', err?.message);
+    return { ok: false, message: err?.message || 'Erro inesperado ao salvar.' };
+  }
+}
+
 // 86 attendees for Day 21 (21/08 - Sexta)
 export const DATASET_DAY_21 = [
   {
@@ -1808,4 +1884,27 @@ CREATE POLICY "Allow public insert checkin_logs"
 
 -- 4. HABILITAR SINCRONIZAÇÃO EM TEMPO REAL (REALTIME)
 ALTER PUBLICATION supabase_realtime ADD TABLE public.attendees;
+
+-- 5. TABELA DE CONFIGURAÇÃO COMPARTILHADA (chave/valor)
+-- Guarda o link do Google Sheets da sincronização, entre outros.
+CREATE TABLE IF NOT EXISTS public.app_config (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_by TEXT,
+  updated_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+ALTER TABLE public.app_config ENABLE ROW LEVEL SECURITY;
+
+DROP POLICY IF EXISTS "Allow public read app_config" ON public.app_config;
+CREATE POLICY "Allow public read app_config"
+  ON public.app_config FOR SELECT USING (true);
+
+DROP POLICY IF EXISTS "Allow public insert app_config" ON public.app_config;
+CREATE POLICY "Allow public insert app_config"
+  ON public.app_config FOR INSERT WITH CHECK (true);
+
+DROP POLICY IF EXISTS "Allow public update app_config" ON public.app_config;
+CREATE POLICY "Allow public update app_config"
+  ON public.app_config FOR UPDATE USING (true);
 `;
