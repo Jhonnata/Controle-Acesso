@@ -17,14 +17,14 @@ import {
   BarChart3,
 } from 'lucide-react';
 import * as XLSX from 'xlsx';
-import { Attendee, ImportBatch } from '../types';
+import { Attendee, ColumnMapping, ImportBatch } from '../types';
 import {
   generateEnteredByExhibitorCSV,
   generateExhibitorSummaryCSV,
   parsePastedOrCSVData,
 } from '../services/storage';
 import { GoogleSyncImport } from './GoogleSyncImport';
-import { SheetRow } from '../utils/googleImport';
+import { fetchGoogleSpreadsheet, isValidCPF } from '../utils/googleImport';
 import {
   compareEventDates,
   getDefaultEventDate,
@@ -61,7 +61,7 @@ interface ExcelImportSummary {
   source: 'manual' | 'excel-auto';
 }
 
-type PreviewMatchStatus = 'new' | 'existing_same_day' | 'missing_cpf' | 'duplicate_in_file';
+type PreviewMatchStatus = 'new' | 'existing_same_day' | 'missing_cpf' | 'duplicate_in_file' | 'invalid_cpf';
 
 interface PreviewImportItem {
   id: string;
@@ -106,6 +106,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
   const [selectedImportDay, setSelectedImportDay] = useState('');
   const [excelImportSummary, setExcelImportSummary] = useState<ExcelImportSummary | null>(null);
   const [selectedPreviewBatchKey, setSelectedPreviewBatchKey] = useState<string | null>(null);
+  const [googleLoading, setGoogleLoading] = useState(false);
 
   const availableDates = useMemo(
     () => sortEventDates(attendees.map((attendee) => attendee.date || '').filter(Boolean)),
@@ -223,6 +224,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
           matchStatus = 'duplicate_in_file';
         } else if (existingCpfDayKeys.has(key)) {
           matchStatus = 'existing_same_day';
+        } else if (!isValidCPF(normalizedCpf)) {
+          matchStatus = 'invalid_cpf';
         }
 
         if (normalizedCpf) seenKeys.add(key);
@@ -246,13 +249,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
         return acc;
       }, {});
 
-      const counts = items.reduce<Record<PreviewMatchStatus, number>>(
-        (acc, item) => {
-          acc[item.matchStatus] += 1;
-          return acc;
-        },
-        { new: 0, existing_same_day: 0, missing_cpf: 0, duplicate_in_file: 0 }
-      );
+  const counts = items.reduce<Record<PreviewMatchStatus, number>>(
+    (acc, item) => {
+      acc[item.matchStatus] += 1;
+      return acc;
+    },
+    { new: 0, existing_same_day: 0, missing_cpf: 0, duplicate_in_file: 0, invalid_cpf: 0 }
+  );
 
       return {
         sheetName: batch.sheetName || 'Importação manual',
@@ -294,14 +297,15 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     () =>
       previewBatches.reduce(
         (acc, batch) => {
-          acc.total += batch.counts.new + batch.counts.existing_same_day + batch.counts.missing_cpf + batch.counts.duplicate_in_file;
+          acc.total += batch.counts.new + batch.counts.existing_same_day + batch.counts.missing_cpf + batch.counts.duplicate_in_file + batch.counts.invalid_cpf;
           acc.new += batch.counts.new;
           acc.existing += batch.counts.existing_same_day;
           acc.missingCpf += batch.counts.missing_cpf;
           acc.duplicateInFile += batch.counts.duplicate_in_file;
+          acc.invalidCpf += batch.counts.invalid_cpf;
           return acc;
         },
-        { total: 0, new: 0, existing: 0, missingCpf: 0, duplicateInFile: 0 }
+        { total: 0, new: 0, existing: 0, missingCpf: 0, duplicateInFile: 0, invalidCpf: 0 }
       ),
     [previewBatches]
   );
@@ -552,19 +556,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               return;
             }
 
-            setPasteText('');
-            const nextPreviewBatches = buildPreviewBatches(nextBatches);
-            setPreviewBatches(nextPreviewBatches);
-            setSelectedPreviewBatchKey(
-              nextPreviewBatches[0]
-                ? `${nextPreviewBatches[0].sheetName}-${nextPreviewBatches[0].eventDate}`
-                : null
-            );
-            setExcelImportSummary({
-              importedSheets,
-              ignoredSheets,
-              source: 'excel-auto',
-            });
+            ingestWorkbookBatches(nextBatches, importedSheets, ignoredSheets);
           } catch (err: any) {
             setImportError(err.message || 'Não foi possível ler a planilha Excel.');
             setPreviewBatches([]);
@@ -617,39 +609,101 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     onClose();
   };
 
-  const handleGoogleImportRows = (rows: SheetRow[]) => {
-    if (!isValidEventDate(selectedImportDay)) {
-      setImportError('Escolha um dia válido (dd/mm) antes de importar do Google Sheets.');
-      return;
+  const ingestWorkbookBatches = (
+    nextBatches: ImportBatch[],
+    importedSheets: Array<{ sheetName: string; eventDate: string; count: number }>,
+    ignoredSheets: string[]
+  ) => {
+    setPasteText('');
+    const nextPreviewBatches = buildPreviewBatches(nextBatches);
+    setPreviewBatches(nextPreviewBatches);
+    setSelectedPreviewBatchKey(
+      nextPreviewBatches[0]
+        ? `${nextPreviewBatches[0].sheetName}-${nextPreviewBatches[0].eventDate}`
+        : null
+    );
+    setExcelImportSummary({
+      importedSheets,
+      ignoredSheets,
+      source: 'excel-auto',
+    });
+  };
+
+  const handleGoogleSync = async (sheetUrl: string) => {
+    setImportError(null);
+    setPreviewBatches([]);
+    setSelectedPreviewBatchKey(null);
+    setExcelImportSummary(null);
+    setGoogleLoading(true);
+    try {
+      const res = await fetchGoogleSpreadsheet(sheetUrl);
+
+      if (res.format === 'csv' && res.csvText) {
+        if (!isValidEventDate(normalizeEventDateInput(selectedImportDay))) {
+          throw new Error('A planilha foi baixada como CSV de uma única aba. Escolha o dia da importação (dd/mm) e sincronize novamente.');
+        }
+        setPasteText(res.csvText);
+        handleParseImport(res.csvText);
+        return;
+      }
+
+      const workbook = XLSX.read(new Uint8Array(res.buffer!), { type: 'array' });
+      const importedSheets: Array<{ sheetName: string; eventDate: string; count: number }> = [];
+      const ignoredSheets: string[] = [];
+      const nextBatches: ImportBatch[] = [];
+      const undated: Array<{ sheetName: string; attendees: Attendee[]; headers: string[]; mapping: ColumnMapping }> = [];
+
+      workbook.SheetNames.forEach((sheetName) => {
+        const eventDateMatch = sheetName.match(/(?:^|[^\d])(\d{2}\/\d{2}|\d{4})(?:[^\d]|$)/);
+        const eventDate = eventDateMatch ? normalizeEventDateInput(eventDateMatch[1]) : '';
+
+        const tsv = XLSX.utils.sheet_to_csv(workbook.Sheets[sheetName], {
+          FS: '\t',
+          blankrows: false,
+        });
+        const result = parsePastedOrCSVData(tsv);
+
+        if (!result.attendees.length) {
+          ignoredSheets.push(sheetName);
+          return;
+        }
+
+        if (isValidEventDate(eventDate)) {
+          nextBatches.push({
+            attendees: result.attendees,
+            headers: result.headers,
+            mapping: result.mapping,
+            eventDate,
+            sheetName,
+          });
+          importedSheets.push({ sheetName, eventDate, count: result.attendees.length });
+        } else {
+          undated.push({ sheetName, attendees: result.attendees, headers: result.headers, mapping: result.mapping });
+        }
+      });
+
+      if (!nextBatches.length && undated.length) {
+        const fallbackDay = normalizeEventDateInput(selectedImportDay);
+        if (!isValidEventDate(fallbackDay)) {
+          throw new Error('As abas da planilha não têm data no nome. Escolha o dia da importação (dd/mm) e sincronize novamente.');
+        }
+        undated.forEach((s) => {
+          nextBatches.push({ attendees: s.attendees, headers: s.headers, mapping: s.mapping, eventDate: fallbackDay, sheetName: s.sheetName });
+          importedSheets.push({ sheetName: s.sheetName, eventDate: fallbackDay, count: s.attendees.length });
+        });
+      }
+
+      if (!nextBatches.length) {
+        throw new Error('Nenhuma linha válida encontrada na planilha do Google Sheets.');
+      }
+
+      ingestWorkbookBatches(nextBatches, importedSheets, ignoredSheets);
+    } catch (err: any) {
+      console.error('[googleSync]', err);
+      setImportError(err.message || 'Erro ao sincronizar com o Google Sheets.');
+    } finally {
+      setGoogleLoading(false);
     }
-    onImportAttendees([
-      {
-        attendees: rows.map((row, index) => ({
-          id: `att-${selectedImportDay}-g-${Date.now()}-${index}`,
-          rowIndex: index + 2,
-          name: String(row.nome || ''),
-          exhibitor: String(row.empresa || 'Geral / Outros'),
-          document: row.cpf ? String(row.cpf) : undefined,
-          isCheckedIn: false,
-          rawValues: [],
-        })),
-        headers: [],
-        mapping: {
-          exhibitorIndex: -1,
-          nameIndex: -1,
-          statusIndex: -1,
-          timestampIndex: -1,
-          documentIndex: -1,
-          roleIndex: -1,
-          standIndex: -1,
-          emailIndex: -1,
-          phoneIndex: -1,
-        },
-        eventDate: selectedImportDay,
-        sheetName: 'Google Sheets',
-      },
-    ]);
-    onClose();
   };
 
   const togglePreviewItem = (targetId: string) => {
@@ -972,10 +1026,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
               </div>
 
               <GoogleSyncImport
-                existingRecords={attendees}
-                keyFields={['cpf']}
-                selectedDay={selectedImportDay}
-                onImportRows={handleGoogleImportRows}
+                loading={googleLoading}
+                onSync={handleGoogleSync}
               />
 
               <div className="space-y-1.5">
@@ -1021,7 +1073,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                       {previewTotals.total} pessoas
                     </span>
                   </div>
-                  <div className="grid grid-cols-2 lg:grid-cols-4 gap-2 text-[11px]">
+                  <div className="grid grid-cols-2 lg:grid-cols-5 gap-2 text-[11px]">
                     <div className="p-2 rounded-lg bg-white border border-slate-200 flex items-center gap-2">
                       <Users className="w-3.5 h-3.5 text-emerald-600" />
                       <span>{previewTotals.new} não encontrados</span>
@@ -1037,6 +1089,10 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                     <div className="p-2 rounded-lg bg-white border border-slate-200 flex items-center gap-2">
                       <Copy className="w-3.5 h-3.5 text-rose-600" />
                       <span>{previewTotals.duplicateInFile} duplicados no arquivo</span>
+                    </div>
+                    <div className="p-2 rounded-lg bg-white border border-slate-200 flex items-center gap-2">
+                      <AlertCircle className="w-3.5 h-3.5 text-rose-600" />
+                      <span>{previewTotals.invalidCpf} CPF inválido</span>
                     </div>
                   </div>
                   <div className="text-[11px] font-bold text-emerald-700">
@@ -1115,7 +1171,7 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                               <div className="text-[10px] text-slate-500">{company.items.length} registros</div>
                             </div>
 
-                            {(['new', 'existing_same_day', 'missing_cpf', 'duplicate_in_file'] as PreviewMatchStatus[]).map((status) => {
+                            {(['new', 'existing_same_day', 'missing_cpf', 'duplicate_in_file', 'invalid_cpf'] as PreviewMatchStatus[]).map((status) => {
                               const items = company.items.filter((item) => item.matchStatus === status);
                               if (!items.length) return null;
 
@@ -1126,6 +1182,8 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                   ? 'Encontrados no sistema'
                                   : status === 'missing_cpf'
                                   ? 'Sem CPF'
+                                  : status === 'invalid_cpf'
+                                  ? 'CPF inválido'
                                   : 'Duplicados no arquivo';
 
                               return (
@@ -1162,6 +1220,9 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                                           )}
                                           {item.matchStatus === 'duplicate_in_file' && (
                                             <div className="text-rose-700">Duplicado dentro do próprio arquivo.</div>
+                                          )}
+                                          {item.matchStatus === 'invalid_cpf' && (
+                                            <div className="text-rose-700">CPF inválido: desmarcado por segurança.</div>
                                           )}
                                         </div>
                                       </label>
