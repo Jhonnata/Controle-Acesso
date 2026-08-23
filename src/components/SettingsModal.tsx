@@ -23,6 +23,8 @@ import {
   generateExhibitorSummaryCSV,
   parsePastedOrCSVData,
 } from '../services/storage';
+import { GoogleSyncImport } from './GoogleSyncImport';
+import { SheetRow } from '../utils/googleImport';
 import {
   compareEventDates,
   getDefaultEventDate,
@@ -615,6 +617,41 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
     onClose();
   };
 
+  const handleGoogleImportRows = (rows: SheetRow[]) => {
+    if (!isValidEventDate(selectedImportDay)) {
+      setImportError('Escolha um dia válido (dd/mm) antes de importar do Google Sheets.');
+      return;
+    }
+    onImportAttendees([
+      {
+        attendees: rows.map((row, index) => ({
+          id: `att-${selectedImportDay}-g-${Date.now()}-${index}`,
+          rowIndex: index + 2,
+          name: String(row.nome || ''),
+          exhibitor: String(row.empresa || 'Geral / Outros'),
+          document: row.cpf ? String(row.cpf) : undefined,
+          isCheckedIn: false,
+          rawValues: [],
+        })),
+        headers: [],
+        mapping: {
+          exhibitorIndex: -1,
+          nameIndex: -1,
+          statusIndex: -1,
+          timestampIndex: -1,
+          documentIndex: -1,
+          roleIndex: -1,
+          standIndex: -1,
+          emailIndex: -1,
+          phoneIndex: -1,
+        },
+        eventDate: selectedImportDay,
+        sheetName: 'Google Sheets',
+      },
+    ]);
+    onClose();
+  };
+
   const togglePreviewItem = (targetId: string) => {
     setPreviewBatches((current) =>
       current.map((batch) => ({
@@ -933,6 +970,13 @@ export const SettingsModal: React.FC<SettingsModalProps> = ({
                   Exemplo: `22/08`, `23/08`, `28/08` ou abas Excel como `2308`. Em Excel com abas datadas, o dia vem do nome da aba.
                 </div>
               </div>
+
+              <GoogleSyncImport
+                existingRecords={attendees}
+                keyFields={['cpf']}
+                selectedDay={selectedImportDay}
+                onImportRows={handleGoogleImportRows}
+              />
 
               <div className="space-y-1.5">
                 <label className="font-semibold text-slate-700 flex items-center gap-2">
